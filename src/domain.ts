@@ -80,6 +80,25 @@ export const taskSpecSchema = z.object({
 export type TaskSpec = z.infer<typeof taskSpecSchema>
 
 /**
+ * A task's execution evidence (ROADMAP L3, v0.6): the structured report a
+ * dispatched subagent produces, making "completed" mean "completed with
+ * evidence". `criteria` is the per-criterion self-assessment (met + note),
+ * `artifacts` the produced paths/commits, `summary` the outcome text (also
+ * carries the failure diagnosis on `error` settlements).
+ */
+export const evidenceSchema = z.object({
+  criteria: z.array(z.object({
+    criterion: z.string().min(1),
+    met: z.boolean(),
+    note: z.string().max(2000).default(''),
+  })).max(64).default([]),
+  artifacts: z.array(z.string().min(1)).max(32).default([]),
+  summary: z.string().max(4000).default(''),
+})
+/** One task's execution evidence. */
+export type TaskEvidence = z.infer<typeof evidenceSchema>
+
+/**
  * One persisted task. `revision` is the optimistic-concurrency counter: a
  * caller that read revision N and writes with `expectedRevision: N` loses to
  * any write that landed meanwhile, rather than silently clobbering it.
@@ -131,6 +150,12 @@ export const taskSchema = z.object({
    * records read back as unspecified.
    */
   spec: taskSpecSchema.nullable().default(null),
+  /**
+   * Execution evidence from the dispatched subagent (v0.6, ROADMAP L3).
+   * `null` until the first settlement with a structured report. Additive with
+   * `.default(null)`, so v0.5 records read back as evidence-free.
+   */
+  evidence: evidenceSchema.nullable().default(null),
   revision: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),

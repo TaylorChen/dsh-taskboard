@@ -329,6 +329,7 @@ describe('short ids', () => {
         origin: 'agent',
         blockedReason: null,
         spec: null,
+        evidence: null,
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -520,6 +521,7 @@ describe('auto-claim', () => {
       origin: 'human',
       blockedReason: null,
       spec: null,
+      evidence: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -598,7 +600,7 @@ describe('subagent dispatch (v0.4 W2)', () => {
     expect(dispatched?.status).toBe('in_progress')
     expect(service.activityOf(task.id).some(entry => entry.action === 'dispatched')).toBe(true)
 
-    const settled = await service.settleDispatch(task.key as string, 'session-a', { kind: 'completed' })
+    const settled = await service.settleDispatch(task.key as string, 'session-a', { kind: 'completed', evidence: { criteria: [{ criterion: 'works', met: true, note: 'seen' }], artifacts: ['out.txt'], summary: 'done' } })
     expect(settled?.status).toBe('awaiting_human')
     expect(settled?.blockedReason).toBeNull()
     expect(service.activityOf(task.id).some(entry => entry.action === 'completed')).toBe(true)
@@ -612,6 +614,7 @@ describe('subagent dispatch (v0.4 W2)', () => {
     const settled = await service.settleDispatch(task.key as string, 'session-a', {
       kind: 'error',
       reason: 'subagent exploded',
+      diagnosis: 'stuck on step 3',
     })
     expect(settled?.status).toBe('blocked')
     expect(settled?.blockedReason).toBe('subagent exploded')
@@ -623,7 +626,7 @@ describe('subagent dispatch (v0.4 W2)', () => {
     await service.autoClaim(task.key as string, 'session-a')
     await service.update(task.key as string, { status: 'done' }, actor)
 
-    await expect(service.settleDispatch(task.key as string, 'session-a', { kind: 'completed' }))
+    await expect(service.settleDispatch(task.key as string, 'session-a', { kind: 'completed', evidence: { criteria: [], artifacts: [], summary: '' } }))
       .resolves.toBeNull()
     expect(service.get(task.key as string)?.status).toBe('done')
   })
@@ -634,8 +637,10 @@ describe('subagent dispatch (v0.4 W2)', () => {
     await service.autoClaim(task.key as string, 'session-a')
 
     await expect(service.recordDispatched(task.key as string, 'session-b', 'sub-9')).resolves.toBeNull()
-    await expect(service.settleDispatch(task.key as string, 'session-b', { kind: 'completed' }))
-      .resolves.toBeNull()
+    await expect(service.settleDispatch(task.key as string, 'session-b', {
+      kind: 'completed',
+      evidence: { criteria: [], artifacts: [], summary: '' },
+    })).resolves.toBeNull()
     expect(service.get(task.key as string)?.status).toBe('in_progress')
   })
 })
@@ -682,6 +687,7 @@ describe('task spec (v0.5 L2)', () => {
       origin: 'agent',
       blockedReason: null,
       spec: null,
+      evidence: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -730,6 +736,44 @@ describe('task spec (v0.5 L2)', () => {
       updatedAt: 0,
     })
     expect(parsed.spec).toBeNull()
+  })
+})
+
+describe('evidence (v0.6 L3)', () => {
+  it('stores evidence on a completed settlement and reads it back', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'E', acceptanceCriteria: ['works'] }, actor)
+    await service.autoClaim(task.key as string, 'session-a')
+    expect(service.evidenceOf(task.key as string)).toBeNull()
+
+    await service.settleDispatch(task.key as string, 'session-a', {
+      kind: 'completed',
+      evidence: {
+        criteria: [{ criterion: 'works', met: true, note: 'verified by test' }],
+        artifacts: ['out.txt'],
+        summary: 'all green',
+      },
+    })
+    expect(service.evidenceOf(task.key as string)?.criteria[0]?.met).toBe(true)
+    expect(service.evidenceOf(task.key as string)?.artifacts).toEqual(['out.txt'])
+    expect(service.get(task.key as string)?.status).toBe('awaiting_human')
+  })
+
+  it('stores the diagnosis in evidence on an error settlement', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'F', acceptanceCriteria: ['works'] }, actor)
+    await service.autoClaim(task.key as string, 'session-a')
+    await service.settleDispatch(task.key as string, 'session-a', {
+      kind: 'error',
+      reason: 'subagent failed',
+      diagnosis: 'stuck at step 3',
+    })
+    const settled = service.get(task.key as string)
+    expect(settled?.status).toBe('blocked')
+    expect(settled?.blockedReason).toBe('subagent failed')
+    expect(settled?.evidence?.summary).toBe('stuck at step 3')
   })
 })
 

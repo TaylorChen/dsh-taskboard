@@ -35,6 +35,7 @@ import {
   type Project,
   type ProjectId,
   type Task,
+  type TaskEvidence,
   type TaskboardGlobal,
   type TaskId,
   type TaskPriority,
@@ -378,6 +379,7 @@ export class TaskboardService {
       origin: actor.kind,
       blockedReason: input.blockedReason ?? null,
       spec,
+      evidence: null,
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -564,20 +566,23 @@ export class TaskboardService {
 
   /**
    * Write back a dispatched task's outcome once the background subagent
-   * settles (v0.4 W2). A system automation write like `autoClaim`: `completed`
-   * moves the task to `awaiting_human` (the ball is back with the human to
-   * confirm), `error` moves it to `blocked` with the reason. The write only
-   * applies while the task is still `in_progress` and claimed by the given
-   * session — a human who moved it meanwhile is never overwritten.
+   * settles (v0.4 W2, v0.6 evidence). A system automation write like
+   * `autoClaim`: `completed` moves the task to `awaiting_human` and stores the
+   * structured evidence; `error` moves it to `blocked` with the reason and a
+   * diagnosis. The write only applies while the task is still `in_progress`
+   * and claimed by the given session — a human who moved it meanwhile is never
+   * overwritten.
    * @param ref - short key or full id.
    * @param sessionId - the claiming session.
-   * @param outcome - the subagent's terminal outcome.
+   * @param outcome - the subagent's terminal outcome, with evidence.
    * @returns the settled task, or `null` when the write does not apply.
    */
   async settleDispatch(
     ref: TaskRef,
     sessionId: string,
-    outcome: { kind: 'completed' } | { kind: 'error', reason: string },
+    outcome:
+      | { kind: 'completed', evidence: TaskEvidence }
+      | { kind: 'error', reason: string, diagnosis: string },
   ): Promise<Task | null> {
     const settled = this.claimChain.then(async () => {
       const current = this.resolve(ref)
@@ -589,6 +594,13 @@ export class TaskboardService {
         ...current,
         status: outcome.kind === 'completed' ? 'awaiting_human' : 'blocked',
         blockedReason: outcome.kind === 'error' ? outcome.reason : null,
+        evidence: outcome.kind === 'completed'
+          ? outcome.evidence
+          : {
+            criteria: [],
+            artifacts: [],
+            summary: outcome.diagnosis,
+          },
         revision: current.revision + 1,
         updatedAt: at,
       }
@@ -605,6 +617,15 @@ export class TaskboardService {
     })
     this.claimChain = settled.then(() => null, () => null)
     return settled
+  }
+
+  /**
+   * Read one task's execution evidence.
+   * @param ref - short key or full id.
+   * @returns the evidence, or `null` when none has been recorded.
+   */
+  evidenceOf(ref: TaskRef): TaskEvidence | null {
+    return this.require(ref).evidence ?? null
   }
 
   /**

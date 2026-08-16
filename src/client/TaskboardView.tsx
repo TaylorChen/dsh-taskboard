@@ -63,6 +63,11 @@ interface BoardTask {
   blockedReason: string | null
   claimedBySessionId: string | null
   spec: { acceptanceCriteria: string[], contextRefs: string[], definitionOfDone: string } | null
+  evidence: {
+    criteria: Array<{ criterion: string, met: boolean, note: string }>
+    artifacts: string[]
+    summary: string
+  } | null
 }
 
 /** One project as the board route serves it. */
@@ -404,6 +409,62 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           {task.spec.acceptanceCriteria.map((criterion, index) => (
                             <div key={index}>✓ {criterion}</div>
                           ))}
+                        </div>
+                      )}
+                      {/* v0.6: a settled task carries the subagent's evidence;
+                          the human confirms or bounces it. */}
+                      {task.status === 'awaiting_human' && task.evidence !== null && (
+                        <div style={{ ...surface, padding: 8, marginBottom: 6, fontSize: 11, lineHeight: 1.4 }}>
+                          <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('evidence.title')}</div>
+                          {task.evidence.criteria.map((entry, index) => (
+                            <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
+                              <span style={{ color: entry.met ? undefined : BLOCKED_TINT }}>
+                                {entry.met ? '✓' : '✗'}
+                              </span>
+                              <span style={{ flex: 1 }}>
+                                {entry.criterion}
+                                {entry.note !== '' && <span style={{ opacity: 0.6 }}> — {entry.note}</span>}
+                              </span>
+                            </div>
+                          ))}
+                          {task.evidence.artifacts.length > 0 && (
+                            <div style={{ opacity: 0.7, marginTop: 4 }}>
+                              {t('evidence.artifacts')}: {task.evidence.artifacts.join(', ')}
+                            </div>
+                          )}
+                          {task.evidence.summary !== '' && (
+                            <div style={{ opacity: 0.7, marginTop: 4 }}>{task.evidence.summary}</div>
+                          )}
+                        </div>
+                      )}
+                      {task.status === 'awaiting_human' && (
+                        <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void write(
+                                `/api/taskboard/task/${encodeURIComponent(task.id)}`,
+                                'PATCH',
+                                { status: 'done', expectedRevision: task.revision },
+                              )
+                            }}
+                            style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', flex: 1 }}
+                          >
+                            {t('evidence.confirm')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void write(
+                                `/api/taskboard/task/${encodeURIComponent(task.id)}`,
+                                'PATCH',
+                                { status: 'draft', expectedRevision: task.revision },
+                              )
+                            }}
+                            style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                          >
+                            {t('evidence.bounce')}
+                          </button>
                         </div>
                       )}
                       {task.labels.length > 0 && (

@@ -65,19 +65,23 @@ function fakeSubagents() {
   const starts: Array<{ name: string, prompt: Array<{ text?: string }>, parentId: string }> = []
   const pending: Array<{
     id: string,
-    resolve: (result: { stopReason: string }) => void,
+    resolve: (result: { stopReason: string, structured?: unknown, output?: Array<{ text?: string }> }) => void,
     reject: (error: Error) => void,
   }> = []
   let seq = 0
   return {
     starts,
-    settleNext: (stopReason: string): void => pending.shift()?.resolve({ stopReason }),
+    settleNext: (
+      stopReason: string,
+      structured?: unknown,
+      output?: Array<{ text?: string }>,
+    ): void => pending.shift()?.resolve({ stopReason, structured, output }),
     failNext: (message: string): void => pending.shift()?.reject(new Error(message)),
     start: (name: string, request: { prompt: Array<{ text?: string }>, parent: { id: string } }) => {
       starts.push({ name, prompt: request.prompt, parentId: request.parent.id })
       return {
         id: `sub-${++seq}`,
-        result: new Promise<{ stopReason: string }>((resolve, reject) => {
+        result: new Promise<{ stopReason: string, structured?: unknown }>((resolve, reject) => {
           pending.push({ id: `sub-${seq}`, resolve, reject })
         }),
       }
@@ -232,12 +236,20 @@ describe('auto-claim driver', () => {
 
     emitIdle()
     await settle()
-    subagents.settleNext('completed')
+    subagents.settleNext('completed', {
+      criteria: [{ criterion: 'ship it', met: true, note: 'verified' }],
+      artifacts: ['out.txt'],
+      summary: 'done',
+    })
     await settle()
 
     const settled = service.get(task.key as string)
     expect(settled?.status).toBe('awaiting_human')
     expect(settled?.blockedReason).toBeNull()
+    expect(settled?.evidence?.criteria[0]).toEqual({
+      criterion: 'ship it', met: true, note: 'verified',
+    })
+    expect(settled?.evidence?.summary).toBe('done')
     expect(service.activityOf(task.id).some(entry => entry.action === 'completed')).toBe(true)
   })
 
@@ -247,12 +259,29 @@ describe('auto-claim driver', () => {
 
     emitIdle()
     await settle()
-    subagents.settleNext('error')
+    subagents.settleNext('error', undefined, [{ text: 'stuck at step 3' }])
     await settle()
 
     const settled = service.get(task.key as string)
     expect(settled?.status).toBe('blocked')
     expect(settled?.blockedReason).toContain('subagent sub-1 ended with error')
+    expect(settled?.evidence?.summary).toContain('stuck at step 3')
+  })
+
+  it('settles as error when the subagent finishes without a structured report', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'No report', acceptanceCriteria: ['works'] }, actor)
+
+    emitIdle()
+    await settle()
+    // 'completed' but no structured value: no half-evidence.
+    subagents.settleNext('completed', undefined)
+    await settle()
+
+    const settled = service.get(task.key as string)
+    expect(settled?.status).toBe('blocked')
+    expect(settled?.blockedReason).toContain('without a structured report')
   })
 
   it('falls back to a follow-up turn when the subagent seam is absent', async () => {

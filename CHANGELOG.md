@@ -4,6 +4,29 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [0.6.0] — 2025-08-17
+
+Verification loop (ROADMAP L3): "completed" now means "completed with evidence".
+
+### Added
+
+- **Structured evidence**: the auto-claim dispatch gives the subagent an
+  `outputSchema` and requires a report of `criteria` (per-criterion
+  self-assessment), `artifacts`, and `summary`; the settled task stores it in a
+  new additive `evidence` field.
+- **No half-evidence**: a `completed` run without a valid structured report
+  settles as `blocked`, never storing partial evidence.
+- **Failure diagnosis**: an `error` settlement carries the tail of the child's
+  output in `evidence.summary` alongside a readable `blockedReason`.
+- **Panel**: `awaiting_human` cards show the evidence (✓/✗ per criterion,
+  artifacts, summary) with 确认完成 (→ done) and 打回待立项 (→ draft) actions.
+- Real E2E (`tests/e2e/evidence-loop.mjs`): subagent produced a structured
+  report (met=true with note), task settled to `awaiting_human` with evidence.
+
+### Migration
+
+None — additive `evidence` field.
+
 ## [0.5.0] — 2025-08-17
 
 Task specs (ROADMAP L2): the board stops being a tracker of intentions and

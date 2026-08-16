@@ -376,6 +376,20 @@ Spec updates are partial merges onto the existing block. The dispatch prompt
 now quotes the acceptance criteria so the executing subagent verifies against
 them — this is what makes the field load-bearing rather than decorative.
 
+**33. v0.6 (ROADMAP L3): "completed" means "completed with evidence".** The
+dispatched subagent is given an `outputSchema` (the object-rooted subset
+`ctx.subagents.start` accepts) and told to report `criteria` (per-criterion
+self-assessment: met + note), `artifacts`, and `summary`. `run.result.structured`
+is the evidence; `settleDispatch` stores it on the task (`evidence` field,
+additive). Two failure guards: a `completed` run WITHOUT a valid structured
+report settles as an error — no half-evidence is ever stored — and an `error`
+run settles `blocked` with the reason plus a diagnosis (the tail of the
+child's partial output) carried in `evidence.summary`. The panel turns
+`awaiting_human` into a decision surface: it shows the evidence and offers
+confirm (→ `done`) and bounce (→ `draft`). The self-assessment is an
+accelerator for the human, never a replacement — the human is the final judge,
+and `met` without a note is visibly thinner evidence.
+
 **13. The invariant companion is empty, with the reason recorded.** Stored
 records are already validated by the storage seam on every load and write;
 revision monotonicity is enforced in `update` and covered by tests; the approval

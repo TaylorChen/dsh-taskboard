@@ -58,9 +58,49 @@ declare module '@deepseek-ai/dsh-llm' {
 interface SubagentsLike {
   start(
     name: string,
-    request: { prompt: readonly ContentBlock[], parent: Agent, signal: AbortSignal },
-  ): Promise<{ id: string, result: Promise<{ stopReason: string }> }>
+    request: {
+      prompt: ContentBlock[]
+      parent: Agent
+      signal: AbortSignal
+      outputSchema?: { type: 'object' } & Record<string, unknown>
+    },
+  ): Promise<{
+    id: string
+    result: Promise<{
+      stopReason: string
+      output?: readonly ContentBlock[]
+      structured?: unknown
+    }>
+  }>
 }
+
+/**
+ * The structured report a dispatched subagent must produce (v0.6): a
+ * per-criterion self-assessment plus produced artifacts and a summary. The
+ * object-rooted subset `ctx.subagents.start` accepts.
+ */
+const OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    criteria: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          criterion: { type: 'string' },
+          met: { type: 'boolean' },
+          note: { type: 'string' },
+        },
+        required: ['criterion', 'met'],
+        additionalProperties: false,
+      },
+    },
+    artifacts: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string' },
+  },
+  required: ['criteria', 'artifacts', 'summary'],
+  additionalProperties: false,
+} as const
 
 /** Cordis plugin name. */
 export const name = 'taskboard-autoclaim'
@@ -170,26 +210,54 @@ export function apply(ctx: Context, config: Config): void {
           prompt: [{ type: 'text', text: renderDispatchPrompt(claimed) }],
           parent: agent,
           signal: new AbortController().signal,
+          outputSchema: OUTPUT_SCHEMA,
         })
         await ctx.taskboard.recordDispatched(claimed.id, agent.id, run.id)
         void run.result.then(
           (result) => {
-            const outcome = result.stopReason === 'completed'
-              ? { kind: 'completed' as const }
-              : {
-                kind: 'error' as const,
-                reason: `subagent ${run.id} ended with ${result.stopReason}`,
+            if (result.stopReason === 'completed') {
+              const report = isTaskEvidence(result.structured)
+              if (report !== undefined) {
+                void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+                  kind: 'completed',
+                  evidence: {
+                    criteria: report.criteria.map(entry => ({
+                      criterion: entry.criterion,
+                      met: entry.met,
+                      note: entry.note ?? '',
+                    })),
+                    artifacts: report.artifacts,
+                    summary: report.summary,
+                  },
+                }).catch(error => ctx.logger.warn(
+                  `taskboard-autoclaim: could not settle dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
+                ))
+                return
               }
-            void ctx.taskboard.settleDispatch(claimed.id, agent.id, outcome)
-              .catch(error => ctx.logger.warn(
-                `taskboard-autoclaim: could not settle dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
+              // No valid structured capture: no half-evidence — settle as error.
+              void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+                kind: 'error',
+                reason: `subagent ${run.id} finished without a structured report`,
+                diagnosis: tailOf(result.output),
+              }).catch(failure => ctx.logger.warn(
+                `taskboard-autoclaim: could not settle missing-report dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
               ))
+              return
+            }
+            void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+              kind: 'error',
+              reason: `subagent ${run.id} ended with ${result.stopReason}`,
+              diagnosis: tailOf(result.output),
+            }).catch(error => ctx.logger.warn(
+              `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
+            ))
           },
           (error) => {
             // `run.result` rejects only on an infrastructure fault.
             void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
               kind: 'error',
-              reason: `subagent ${run.id} failed to run: ${renderThrown(error)}`,
+              reason: `subagent ${run.id} failed to run`,
+              diagnosis: renderThrown(error),
             }).catch(failure => ctx.logger.warn(
               `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
             ))
@@ -284,7 +352,7 @@ function renderDispatchPrompt(task: Task): string {
   const spec = task.spec
   return [
     `You were assigned task ${key} on the task board: ${task.title}.`,
-    'Work on it in this session. When finished, report your result as your final message.',
+    'Work on it in this session.',
     'Do not modify the task board yourself — the dispatcher records your outcome.',
     spec === null || spec.acceptanceCriteria.length === 0
       ? undefined
@@ -296,6 +364,10 @@ function renderDispatchPrompt(task: Task): string {
       ? `\nDefinition of done: ${spec.definitionOfDone}`
       : undefined,
     task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
+    '\nWhen finished, report as a JSON object with exactly these fields:\n'
+    + '- criteria: array of {criterion: <one acceptance criterion>, met: <true|false>, note: <evidence or reason>}\n'
+    + '- artifacts: array of produced file paths / commit hashes\n'
+    + '- summary: one paragraph stating what you did and the result',
   ].filter(line => line !== undefined).join('\n')
 }
 
@@ -318,6 +390,37 @@ function bounded(text: string): string {
   return text.length <= BODY_PREVIEW_CHARS
     ? text
     : `${text.slice(0, BODY_PREVIEW_CHARS)}… (${text.length} chars total)`
+}
+
+/** Whether an unknown structured value is a usable task-evidence report. */
+function isTaskEvidence(value: unknown): {
+  criteria: Array<{ criterion: string, met: boolean, note?: string }>
+  artifacts: string[]
+  summary: string
+} | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as Record<string, unknown>
+  if (!Array.isArray(record.criteria) || !Array.isArray(record.artifacts)) return undefined
+  if (typeof record.summary !== 'string') return undefined
+  if (!record.criteria.every(criterion =>
+    typeof criterion === 'object' && criterion !== null
+    && typeof (criterion as Record<string, unknown>).criterion === 'string'
+    && typeof (criterion as Record<string, unknown>).met === 'boolean')) return undefined
+  return record as {
+    criteria: Array<{ criterion: string, met: boolean, note?: string }>
+    artifacts: string[]
+    summary: string
+  }
+}
+
+/** The tail of the subagent's partial output, for a failure diagnosis. */
+function tailOf(output: readonly ContentBlock[] | undefined): string {
+  const text = (output ?? [])
+    .map(block => (block as { text?: string }).text ?? '')
+    .join('\n')
+    .trim()
+  if (text === '') return 'no output captured'
+  return text.length <= 2000 ? text : `…${text.slice(-2000)}`
 }
 
 /** Render a thrown value into a logger line. */

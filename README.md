@@ -126,6 +126,20 @@ Creating a task without `acceptance_criteria` lands it in `draft` rather than
 failing; complete the spec (via `task_update` or the API) and move it to
 `open` to make it claimable.
 
+## Execution evidence (v0.6)
+
+When a claimed task settles, the executing subagent reports **structured
+evidence**: a per-criterion self-assessment (`met` + note), produced artifacts,
+and a summary. The task lands in 等你确认 (`awaiting_human`) carrying that
+evidence; the panel shows it (✓/✗ per criterion) with two actions:
+
+- **确认完成** — move to `done` (the human confirms the outcome)
+- **打回待立项** — bounce to `draft` (the work needs to be redone)
+
+A subagent that finishes without a valid structured report settles as
+`blocked` — the board never stores half-evidence. The self-assessment is an
+accelerator for your review, not a replacement for it.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
