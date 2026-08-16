@@ -5,11 +5,14 @@
  * It defines no client service and imports no other plugin's values: the panel
  * reads the host through this package's own `/api/taskboard` routes, which is
  * what keeps it inside the client bundle purity rule (cross-plugin
- * collaboration goes through cordis services, never value imports).
+ * collaboration goes through cordis services, never value imports). The one
+ * cross-service call — jumping into a task's claiming session (W4) — goes
+ * through the injected `sessions` cordis service (`ctx.sessions.open`, the
+ * official session-switch API found by Spike S2), not through DOM or history.
  * @module @navidid/dsh-taskboard/client
  */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, ISessions, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale) into this program.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: the 'conversation.view' SlotMap row, declared by its owning
@@ -25,8 +28,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Required services: the slot registry and the locale service. */
-export const inject = ['slots', 'locale']
+/** Required services: the slot registry, the locale service, and the sessions
+ * service (for the "open in conversation" jump). */
+export const inject = ['slots', 'locale', 'sessions']
 
 /**
  * Client plugin body: register the dictionaries and the board tab. Both
@@ -37,6 +41,12 @@ export const inject = ['slots', 'locale']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-taskboard: dictionaries')
   const t = ctx.locale.bind(NS)
+  // `sessions` is declared twice on the cordis Context: the host-side
+  // dsh-session augmentation types it as SessionStore, the client runtime as
+  // ISessions. In a mixed server+client typecheck the host one wins, so the
+  // client face is recovered through its exported type. At runtime the client
+  // runtime's sessions service is what is mounted.
+  const sessions = ctx.sessions as unknown as ISessions
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'taskboard',
@@ -44,6 +54,18 @@ export function apply(ctx: ClientContext): void {
     order: 20,
     locale: NS,
     label: () => t('view.taskboard'),
-    inject: (): TaskboardViewInjected => ({ t }),
+    inject: (): TaskboardViewInjected => ({
+      t,
+      sessions: {
+        // The stored session id on a task is a plain string; the sessions
+        // service expects its branded SessionId, so the brand is applied at
+        // this one boundary. Liveness is checked against `byId` (host rows +
+        // the current addressed subagent route) rather than `ids` (host list
+        // order only, breadcrumb rows excluded): `open` accepts any listed or
+        // retained catalog address, and a deleted session is absent from both.
+        open: (id: string) => sessions.open(id as SessionId),
+        exists: (id: string) => Object.hasOwn(sessions.list.getSnapshot().byId, id),
+      },
+    }),
   }, TaskboardView))
 }

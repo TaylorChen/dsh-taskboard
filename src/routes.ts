@@ -1,6 +1,6 @@
 /**
  * JSON API (`@navidid/dsh-taskboard/routes`) for the browser panel: three read
- * routes and two write routes.
+ * routes, two write routes, and one activity route.
  *
  * **Why writes are allowed here.** The approval gate is about the initiator,
  * not the surface: a model is not the authority over the board, a human is. A
@@ -15,6 +15,9 @@
  * requires `content-type: application/json`, which is not a CORS-simple type:
  * a cross-origin caller must first pass a preflight, and this server answers
  * none. A same-origin panel fetch is unaffected.
+ *
+ * Task paths accept the short key (`/task/TB-1`) or the full id — the service
+ * resolves either.
  * @module @navidid/dsh-taskboard/routes
  */
 
@@ -25,7 +28,7 @@ import type {} from './index.ts'
 import { TaskboardError } from './errors.ts'
 import {
   TASK_PRIORITIES, TASK_STATUSES,
-  type TaskId, type TaskPriority, type TaskStatus,
+  type TaskPriority, type TaskStatus,
 } from './domain.ts'
 import type { Actor } from './service.ts'
 
@@ -85,30 +88,42 @@ export function apply(ctx: Context): void {
         : ctx.taskboard.projects()[0]?.id
       if (projectId === undefined) throw new TaskboardError('not-found', 'the board has no project')
       const priority = isPriority(input.priority) ? input.priority : undefined
+      const status = isStatus(input.status) ? input.status : undefined
       const task = await ctx.taskboard.create({
         projectId,
         title,
         ...typeof input.body === 'string' ? { body: input.body } : {},
+        ...status === undefined ? {} : { status },
         ...priority === undefined ? {} : { priority },
       }, PANEL)
       json(res, 201, task)
     })
   })
 
-  // Update one task; the id is the path tail. The prefix path carries NO
-  // trailing slash — the web server documents `path` as "absolute pathname, no
-  // trailing slash", and one added here simply never matches. It may repeat the
-  // exact route's path because exact and prefix live in separate tables and
-  // exact wins first, so POST /task lands above and PATCH /task/<id> here.
+  // Update one task; the reference (key or id) is the path tail. The prefix
+  // path carries NO trailing slash — the web server documents `path` as
+  // "absolute pathname, no trailing slash", and one added here simply never
+  // matches. It may repeat the exact route's path because exact and prefix
+  // live in separate tables and exact wins first, so POST /task lands above
+  // and PATCH /task/<ref> here.
   route(`${BASE}/task`, 'prefix', async (req, res) => {
     const url = new URL(req.url ?? '', 'http://localhost')
-    const id = decodeURIComponent(url.pathname.slice(`${BASE}/task/`.length))
-    if (id === '') return json(res, 400, { error: 'missing task id' })
+    const tail = decodeURIComponent(url.pathname.slice(`${BASE}/task/`.length))
+    if (tail === '') return json(res, 400, { error: 'missing task id' })
+
+    // GET /task/<ref>/activity — the one read sub-path under /task/<ref>.
+    const activityRef = tail.match(/^(.*)\/activity$/)
+    if (activityRef !== null) {
+      if (req.method !== 'GET') return json(res, 405, { error: 'use GET for the activity stream' })
+      const task = ctx.taskboard.get(activityRef[1] as string)
+      if (task === undefined) return json(res, 404, { error: `no task '${activityRef[1]}'` })
+      return json(res, 200, ctx.taskboard.activityOf(task.id))
+    }
 
     if (req.method === 'GET') {
-      const task = ctx.taskboard.get(id as TaskId)
+      const task = ctx.taskboard.get(tail)
       return task === undefined
-        ? json(res, 404, { error: `no task '${id}'` })
+        ? json(res, 404, { error: `no task '${tail}'` })
         : json(res, 200, task)
     }
     if (req.method !== 'PATCH') return json(res, 405, { error: 'use GET or PATCH' })
@@ -119,11 +134,12 @@ export function apply(ctx: Context): void {
       const input = body as Record<string, unknown>
       const status = isStatus(input.status) ? input.status : undefined
       const priority = isPriority(input.priority) ? input.priority : undefined
-      const task = await ctx.taskboard.update(id as TaskId, {
+      const task = await ctx.taskboard.update(tail, {
         ...status === undefined ? {} : { status },
         ...priority === undefined ? {} : { priority },
         ...typeof input.title === 'string' ? { title: input.title } : {},
         ...typeof input.body === 'string' ? { body: input.body } : {},
+        ...typeof input.blockedReason === 'string' ? { blockedReason: input.blockedReason } : {},
         ...typeof input.expectedRevision === 'number'
           ? { expectedRevision: input.expectedRevision }
           : {},

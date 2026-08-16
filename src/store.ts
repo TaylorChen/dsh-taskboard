@@ -8,7 +8,10 @@
  */
 
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
-import type { TASKBOARD_DOMAIN, Project, ProjectId, Task, TaskId } from './domain.ts'
+import type {
+  Activity, ActivityId, Project, ProjectId, Task, TaskId, TaskboardGlobal,
+  TASKBOARD_DOMAIN,
+} from './domain.ts'
 import type { TaskboardStore } from './service.ts'
 
 /** The opened domain, typed by this package's spec. */
@@ -27,6 +30,7 @@ export type TaskboardDomain = Domain<typeof TASKBOARD_DOMAIN>
 export function createStore(domain: TaskboardDomain): TaskboardStore {
   const tasks = domain.table('tasks')
   const projects = domain.table('projects')
+  const activity = domain.table('activity')
 
   return {
     listTasks: () => [...tasks.entries()].map(([, task]) => task),
@@ -36,5 +40,12 @@ export function createStore(domain: TaskboardDomain): TaskboardStore {
     listProjects: () => [...projects.entries()].map(([, project]) => project),
     getProject: (id: ProjectId) => projects.get(id),
     putProject: (project: Project) => projects.put(project.id as ProjectId, project),
+    listActivity: (taskId: TaskId) => [...activity.entries()]
+      .map(([, entry]) => entry)
+      .filter(entry => entry.taskId === taskId),
+    putActivity: (entry: Activity) => activity.put(entry.id as ActivityId, entry),
+    deleteActivity: (id: ActivityId) => activity.delete(id),
+    getGlobal: () => domain.global.get(),
+    setGlobal: (value: TaskboardGlobal) => domain.global.set(value),
   }
 }

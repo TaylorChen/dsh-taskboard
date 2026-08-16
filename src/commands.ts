@@ -14,12 +14,16 @@
  * otherwise. Reading `ctx.commands` behind a TypeScript optional would throw at
  * runtime — Cordis rejects a property read for a service this fiber did not
  * inject, rather than returning `undefined`.
+ *
+ * v0.2: status arguments validate against the seven-state machine, list shows
+ * the short key instead of a truncated id, and `show` accepts the key or the
+ * full id (the service resolves either).
  * @module @navidid/dsh-taskboard/src/commands
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import type { TaskId, TaskStatus } from './domain.ts'
+import type { TaskStatus } from './domain.ts'
 import { TASK_STATUSES } from './domain.ts'
 import { TaskboardError } from './errors.ts'
 import type { TaskboardService } from './service.ts'
@@ -38,7 +42,7 @@ export function registerCommands(
   ctx.inject(['commands'], (scoped: Context) => {
     scoped.effect(() => scoped.commands.register({
       name: 'task',
-      description: 'Browse the task board: list [status] · show <id> · export',
+      description: 'Browse the task board: list [status] · show <id|key> · export',
       handler: (invocation: CommandInvocation): CommandResult =>
         run(service, listLimit, invocation.rawInput.trim()),
     }), 'dsh-taskboard.commands')
@@ -69,22 +73,23 @@ function listResult(service: TaskboardService, limit: number, status?: string): 
   const tasks = service.list({ status, limit })
   if (tasks.length === 0) return { kind: 'success', text: 'No matching tasks.' }
   const lines = tasks.map(task =>
-    `${task.status.padEnd(12)} ${task.priority.padEnd(7)} ${task.id.slice(0, 8)}  ${task.title}`)
+    `${task.status.padEnd(15)} ${task.priority.padEnd(7)} ${(task.key ?? task.id).padEnd(6)}  ${task.title}`)
   return { kind: 'success', text: lines.join('\n') }
 }
 
 /** Render one task in full. */
-function showResult(service: TaskboardService, id?: string): CommandResult {
-  if (id === undefined) return { kind: 'error', text: 'usage: /task show <id>' }
-  const task = service.get(id as TaskId)
-  if (task === undefined) return { kind: 'error', text: `no task '${id}'` }
+function showResult(service: TaskboardService, ref?: string): CommandResult {
+  if (ref === undefined) return { kind: 'error', text: 'usage: /task show <id|key>' }
+  const task = service.get(ref)
+  if (task === undefined) return { kind: 'error', text: `no task '${ref}'` }
   return {
     kind: 'success',
     text: [
-      `${task.title}`,
+      `${task.key ?? task.id}  ${task.title}`,
       `id ${task.id}  rev ${task.revision}`,
       `status ${task.status}  priority ${task.priority}`,
       task.labels.length > 0 ? `labels ${task.labels.join(', ')}` : '',
+      task.blockedReason === null ? '' : `blocked: ${task.blockedReason}`,
       task.claimedBySessionId === null ? '' : `claimed by session ${task.claimedBySessionId}`,
       '',
       task.body,

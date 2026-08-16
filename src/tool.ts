@@ -1,5 +1,5 @@
 /**
- * The model-facing half (`@navidid/dsh-taskboard/tool`): five tools over
+ * The model-facing half (`@navidid/dsh-taskboard/tool`): six tools over
  * `ctx.taskboard`. Mounted as its own cordis row so a deployment can run the
  * board as a human-only surface by disabling this row alone.
  *
@@ -7,6 +7,10 @@
  * nothing in this file may touch the medium. Enum-constrained parameters carry
  * their `enum` in the schema so the tool pipeline rejects an out-of-range value
  * before `execute` runs; model-supplied JSON is a validation boundary.
+ *
+ * Task references: `id` parameters accept the human-readable short key (`TB-1`)
+ * or the full id alike, and every rendered output shows the key — the UUID is
+ * never model-visible (ARCHITECTURE decisions 12 and 20).
  * @module @navidid/dsh-taskboard/tool
  */
 
@@ -16,7 +20,7 @@ import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import type {} from './index.ts'
 import type { Actor } from './service.ts'
-import { TASK_PRIORITIES, TASK_STATUSES, type Task, type TaskId } from './domain.ts'
+import { TASK_PRIORITIES, TASK_STATUSES, type Task } from './domain.ts'
 import { DEFAULT_LIST_LIMIT } from './defaults.ts'
 
 /** Cordis plugin name. */
@@ -40,7 +44,7 @@ export const Config: z<Config> = z.object({
 const taskValueSchema = {
   type: 'object',
   properties: {
-    id: { type: 'string', required: true },
+    key: { type: 'string', required: true },
     title: { type: 'string', required: true },
     status: { type: 'string', required: true },
     priority: { type: 'string', required: true },
@@ -51,7 +55,7 @@ const taskValueSchema = {
 
 /** One model-visible task. */
 interface TaskView {
-  id: string
+  key: string
   title: string
   status: string
   priority: string
@@ -83,15 +87,13 @@ export function apply(ctx: Context, config: Config): void {
     },
     output: {
       schema: { type: 'array', items: taskValueSchema },
-      // Ids are rendered IN FULL. `render` produces the only text the model
-      // sees — the canonical value never reaches it — so an abbreviated id here
-      // makes the model call task_update with an id that does not exist. A UI
-      // that wants a short id truncates in its own presenter.
+      // Keys are rendered IN FULL — see ARCHITECTURE decision 12: render is
+      // the model's only view, and the key is what a later tool call references.
       render: (_args, value) => [{
         type: 'text',
         text: value.length === 0
           ? 'No matching tasks.'
-          : value.map(t => `[${t.status}] ${t.id} ${t.title} (rev ${t.revision})`).join('\n'),
+          : value.map(t => `[${t.status}] ${t.key} ${t.title} (rev ${t.revision})`).join('\n'),
       }],
     },
     execute(args) {
@@ -150,6 +152,11 @@ export function apply(ctx: Context, config: Config): void {
       project_id: { type: 'string', required: true, description: 'Owning project id' },
       title: { type: 'string', required: true, description: 'Short imperative summary' },
       body: { type: 'string', description: 'Full description' },
+      status: {
+        type: 'string',
+        enum: TASK_STATUSES,
+        description: 'Board column to create in (default open)',
+      },
       priority: {
         type: 'string',
         enum: TASK_PRIORITIES,
@@ -158,13 +165,14 @@ export function apply(ctx: Context, config: Config): void {
     },
     output: {
       schema: taskValueSchema,
-      render: (_args, value) => [{ type: 'text', text: `Created ${value.id} — ${value.title}` }],
+      render: (_args, value) => [{ type: 'text', text: `Created ${value.key} — ${value.title}` }],
     },
     async execute(args, exec) {
       const task = await ctx.taskboard.create({
         projectId: args.project_id,
         title: args.title,
         ...args.body === undefined ? {} : { body: args.body },
+        ...args.status === undefined ? {} : { status: args.status },
         ...args.priority === undefined ? {} : { priority: args.priority },
       }, actorOf(exec))
       return summarize(task)
@@ -175,10 +183,11 @@ export function apply(ctx: Context, config: Config): void {
     name: 'task_update',
     description:
       'Move a task between columns or edit its fields. Pass expected_revision (from task_list) '
-      + 'to refuse the write if the task changed meanwhile. Requires human approval under the '
-      + 'default write policy.',
+      + 'to refuse the write if the task changed meanwhile. Moving a task into blocked requires '
+      + 'a reason — use task_block for that. Requires human approval under the default write '
+      + 'policy.',
     parameters: {
-      id: { type: 'string', required: true, description: 'Task id' },
+      id: { type: 'string', required: true, description: 'Task id or short key (e.g. TB-1)' },
       status: { type: 'string', enum: TASK_STATUSES, description: 'Move to this board column' },
       title: { type: 'string', description: 'New title' },
       body: { type: 'string', description: 'New description' },
@@ -191,11 +200,11 @@ export function apply(ctx: Context, config: Config): void {
       schema: taskValueSchema,
       render: (_args, value) => [{
         type: 'text',
-        text: `Updated ${value.id} — now ${value.status} (rev ${value.revision})`,
+        text: `Updated ${value.key} — now ${value.status} (rev ${value.revision})`,
       }],
     },
     async execute(args, exec) {
-      const task = await ctx.taskboard.update(args.id as TaskId, {
+      const task = await ctx.taskboard.update(args.id, {
         ...args.status === undefined ? {} : { status: args.status },
         ...args.title === undefined ? {} : { title: args.title },
         ...args.body === undefined ? {} : { body: args.body },
@@ -211,17 +220,44 @@ export function apply(ctx: Context, config: Config): void {
       'Claim a task for the current session and move it to in_progress, so parallel sessions do '
       + 'not pick up the same work.',
     parameters: {
-      id: { type: 'string', required: true, description: 'Task id' },
+      id: { type: 'string', required: true, description: 'Task id or short key (e.g. TB-1)' },
     },
     output: {
       schema: taskValueSchema,
-      render: (_args, value) => [{ type: 'text', text: `Claimed ${value.id} — ${value.title}` }],
+      render: (_args, value) => [{ type: 'text', text: `Claimed ${value.key} — ${value.title}` }],
     },
     async execute(args, exec) {
-      const task = await ctx.taskboard.update(args.id as TaskId, {
+      const task = await ctx.taskboard.update(args.id, {
         status: 'in_progress',
         claimedBySessionId: exec.agent?.session.id ?? null,
       }, actorOf(exec))
+      return summarize(task)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'task_block',
+    description:
+      'Report a task as blocked: you are stuck and need a human to unblock you. Moves the task '
+      + 'to the blocked column with the reason attached. Requires human approval under the '
+      + 'default write policy.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Task id or short key (e.g. TB-1)' },
+      reason: {
+        type: 'string',
+        required: true,
+        description: 'Why you are stuck; shown on the task and to the human',
+      },
+    },
+    output: {
+      schema: taskValueSchema,
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Blocked ${value.key} — now ${value.status} (rev ${value.revision})`,
+      }],
+    },
+    async execute(args, exec) {
+      const task = await ctx.taskboard.block(args.id, args.reason, actorOf(exec))
       return summarize(task)
     },
   }))
@@ -244,7 +280,7 @@ function actorOf(exec: ToolRunContext): Actor {
 /** Project one stored task onto the model-visible fields. */
 function summarize(task: Task): TaskView {
   return {
-    id: task.id,
+    key: task.key ?? task.id,
     title: task.title,
     status: task.status,
     priority: task.priority,

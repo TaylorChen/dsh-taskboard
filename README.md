@@ -77,18 +77,41 @@ board.
 | --- | --- |
 | `task_projects` | List projects, to obtain a `project_id` — the only discovery path on an empty board |
 | `task_list` | Read the board, optionally filtered by column or project |
-| `task_create` | Add a task **(approval-gated)** |
+| `task_create` | Add a task, optionally straight into a column **(approval-gated)** |
 | `task_update` | Move a task between columns or edit it **(approval-gated)** |
 | `task_claim` | Claim a task for this session and move it to `in_progress` **(approval-gated)** |
+| `task_block` | Report a task as blocked, with the reason **(approval-gated)** |
 
+Tasks are referenced by their short key (`TB-1`) everywhere — every `id`
+parameter accepts the key or the full id, and the model only ever sees the key.
 `task_update` and `task_claim` accept `expected_revision`. A caller that passes
 the revision it last read loses to any write that landed meanwhile
 (`revision-conflict`) instead of silently clobbering it. This is what makes
 parallel sessions on one board safe.
 
+## The status machine
+
+Columns describe **whose turn it is**, not how far the work progressed — the
+board is organised around the ball, because that is what drives notifications,
+highlighting, and (v0.3) auto-claim:
+
+| Status | Meaning | Ball is with |
+| --- | --- | --- |
+| `draft` | 待立项 — not defined yet | human |
+| `open` | 等待认领 — defined, claimable | agent (claimable) |
+| `in_progress` | 处理中 — on an agent's hands | agent |
+| `awaiting_human` | 等你确认 — back with the human | human |
+| `blocked` | 遇到阻碍 — agent stuck, needs a human | human (exception) |
+| `done` | 完成 | — |
+| `cancelled` | 取消 | — |
+
+Moving into `blocked` requires a reason (use `task_block`); leaving `blocked`
+clears it. Blocking is an agent's report — the panel does not offer it as a
+move target, a human unblocks by moving the card anywhere else.
+
 ## Commands
 
-`/task list [status]` · `/task show <id>` · `/task export`
+`/task list [status]` · `/task show <id|key>` · `/task export`
 
 Commands are read-only in this version. They dispatch without spending a model
 turn. (Human-initiated command writes are possible now that the gate keys on the
@@ -96,25 +119,41 @@ initiator rather than the surface — they just are not built yet.)
 
 ## The board panel
 
-Open any session and the board is the third view tab, beside 对话 and 轨迹. Five
-columns, one card per task, a priority accent, labels, and per-column counts.
+Open any session and the board is the third view tab, beside 对话 and 轨迹.
+Seven columns, one card per task, a priority accent, labels, and per-column
+counts. The `blocked` column and its cards are warning-tinted and show the
+blocking reason.
 
 **You create and move tasks here directly** — no approval prompt, because you
-are the one asking. The agent's `task_*` tools still need your approval. Each
-card records which of you made it (`你创建` / `agent 创建`).
+are the one asking. Each column has its own `+` that creates straight into that
+column. The agent's `task_*` tools still need your approval. Each card records
+which of you made it (`你创建` / `agent 创建`).
+
+A card opens an **activity drawer**: who (you or the agent) did what and when,
+newest first. A claimed task shows its session and an **「在对话中打开」** button
+that switches the conversation to that session — no page reload.
 
 The panel ships no stylesheet — it colours itself with `color-mix` over
 `currentColor` and inherits the shell's theme.
+
+## Short ids
+
+Every task carries a human-readable key — `TB-1`, `TB-2`, … — unique board-wide,
+never reused after deletion. Say it out loud, paste it into a commit message,
+reference it in any tool call. The prefix is `Config.keyPrefix` (default `TB`).
+v0.1 boards are backfilled once at the first mount, in creation order, with no
+further action.
 
 ## HTTP API
 
 | Method | Path | Effect |
 | --- | --- | --- |
 | GET | `/api/taskboard/board?status=…` | Read the board |
-| GET | `/api/taskboard/task/<id>` | Read one task |
+| GET | `/api/taskboard/task/<id\|key>` | Read one task |
+| GET | `/api/taskboard/task/<id\|key>/activity` | One task's activity stream, newest first |
 | GET | `/api/taskboard/export` | Backup document |
 | POST | `/api/taskboard/task` | Create (human-initiated, no approval) |
-| PATCH | `/api/taskboard/task/<id>` | Update; send `expectedRevision` to refuse a stale write |
+| PATCH | `/api/taskboard/task/<id\|key>` | Update; send `expectedRevision` to refuse a stale write |
 
 Registered on the host's existing web server; no new port. **Writes require
 `content-type: application/json`** — see [SECURITY.md](SECURITY.md) for why.
@@ -122,15 +161,17 @@ Registered on the host's existing web server; no new port. **Writes require
 ## Configuration
 
 ```yaml
-# $DSH_HOME/cordis.patch.yml — a patch replaces the whole `config`, so restate
-# every key you want to keep.
-- replace:
-    - id: taskboard
-      config:
-        writePolicy: ask        # ask | auto | off
-        maxTasks: 2000
-        listLimit: 50
-        defaultProjectName: Inbox
+# $DSH_HOME/cordis.patch.yml — a config patch replaces the whole `config`, so
+# restate every key you want to keep. (The loader's patch entry is the flat
+# `{ id, config }` form — no `replace:` wrapper.)
+- id: taskboard
+  config:
+    writePolicy: ask        # ask | auto | off
+    maxTasks: 2000
+    listLimit: 50
+    defaultProjectName: Inbox
+    keyPrefix: TB
+    activityRetentionPerTask: 50
 ```
 
 | Key | Default | Meaning |
@@ -139,6 +180,8 @@ Registered on the host's existing web server; no new port. **Writes require
 | `maxTasks` | `2000` | Ceiling on stored tasks |
 | `listLimit` | `50` | Default page size for `task_list` |
 | `defaultProjectName` | `Inbox` | Project seeded when the board opens empty |
+| `keyPrefix` | `TB` | Short-id prefix; keys look like `TB-1` |
+| `activityRetentionPerTask` | `50` | Activity entries kept per task before the oldest are trimmed |
 
 ### Scaling past a few hundred tasks
 
@@ -150,12 +193,11 @@ backend's reason to exist. For a large board, route this domain to SQLite:
 - insert:
     - id: storage-sqlite
       name: '@deepseek-ai/dsh-storage-sqlite'
-- replace:
-    - id: storage-domain
-      config:
-        backend: json
-        routes:
-          taskboard: sqlite
+- id: storage-domain
+  config:
+    backend: json
+    routes:
+      taskboard: sqlite
 ```
 
 ## Backup, and why it ships in v1
@@ -163,7 +205,13 @@ backend's reason to exist. For a large board, route this domain to SQLite:
 The storage layer has **no migration path**: a medium stamped with a different
 domain version rejects at open. `/task export` and `GET /api/taskboard/export`
 produce a `dsh-taskboard-export-v1` document, and `ctx.taskboard.importDocument`
-reads it back. Export before upgrading across a domain version bump.
+reads it back.
+
+> **Upgrading to v0.2? Export first.** v0.2 normalizes stored statuses and
+> backfills keys — the board reads fine after the upgrade, but rolling back to
+> v0.1 afterwards would make the normalized records fail to parse. Export
+> (`/task export` or the export route) before upgrading, so you can restore if
+> you ever need to go back.
 
 ## Compatibility
 

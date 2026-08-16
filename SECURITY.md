@@ -18,7 +18,7 @@ agent's authority.
 | Credential access | **No** | No environment variable, key file, or credential store is read. |
 | Shell execution | **No** | No subprocess is spawned. |
 | Telemetry | **No** | Nothing is reported anywhere. |
-| HTTP listener | **Indirect** | Five routes under `/api/taskboard` are registered on the host's existing web server. No new port is opened. Three are reads; two accept human-initiated writes from the panel. |
+| HTTP listener | **Indirect** | Six routes under `/api/taskboard` are registered on the host's existing web server. No new port is opened. Four are reads (board, export, one task, one task's activity stream); two accept human-initiated writes from the panel. |
 | Install-time scripts | **No** | No `prepare`, `postinstall`, or other lifecycle script. Published to npm pre-built, so installing never executes our code. |
 
 ## Trust boundaries
@@ -49,6 +49,22 @@ exposure is the host's documented posture, not something this plugin can fix.
 
 **Task text is model-visible.** Titles and bodies reach the model through
 `task_list` and `task_create` results. Do not store secrets in a task.
+
+**`blockedReason` is model-visible text with a narrow flow.** The reason is
+*supplied by* the model (through `task_block`), and it appears wherever a human
+needs it: on the board card, in the activity drawer, and inside approval
+payloads (so the human decides an unblock against the concrete reason). The
+current tool outputs do not project it back to the model — a blocked task is
+ball-with-human, and the model has no call that reads the reason back. But it
+is stored on the task record and served by the API, so treat it like any task
+text: no secrets in a blocking reason.
+
+**Activity entries are not model-visible.** The per-task activity stream is
+served only to the panel over the read route; no tool projects it. It records
+who (human or agent, plus the agent's session id), when, and what transition —
+the same audit facts the session log already carries for agent writes, now in
+board state. A refused write never produces an entry; refusals stay in the
+session log only.
 
 **Approval payloads quote the change.** So a human approves a concrete
 before/after rather than an abstract verb, an approval prompt contains the task

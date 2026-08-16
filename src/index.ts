@@ -22,6 +22,8 @@ import { createStore, type TaskboardDomain } from './store.ts'
 import { TaskboardService } from './service.ts'
 import { registerCommands } from './commands.ts'
 import {
+  DEFAULT_ACTIVITY_RETENTION_PER_TASK,
+  DEFAULT_KEY_PREFIX,
   DEFAULT_LIST_LIMIT,
   DEFAULT_MAX_TASKS,
   DEFAULT_WRITE_POLICY,
@@ -36,15 +38,16 @@ declare module '@deepseek-ai/cordis' {
 
 export { TaskboardService } from './service.ts'
 export type {
-  Actor, CreateTaskInput, ListFilter, TaskboardStore, UpdateTaskInput,
+  Actor, ActivityStream, CreateTaskInput, ListFilter, TaskRef, TaskboardStore, UpdateTaskInput,
 } from './service.ts'
 export { TaskboardError } from './errors.ts'
 export type { TaskboardErrorCode } from './errors.ts'
 export {
-  DOMAIN_VERSION, EXPORT_SCHEMA, TASK_PRIORITIES, TASK_STATUSES,
+  ACTIVITY_ACTIONS, DOMAIN_VERSION, EXPORT_SCHEMA, TASK_PRIORITIES, TASK_STATUSES,
 } from './domain.ts'
 export type {
-  ExportDocument, Project, ProjectId, Task, TaskId, TaskPriority, TaskStatus,
+  Activity, ActivityAction, ActivityId, ExportDocument, Project, ProjectId, Task, TaskId,
+  TaskPriority, TaskStatus, TaskboardGlobal,
 } from './domain.ts'
 
 /** Cordis plugin name. */
@@ -67,6 +70,10 @@ export interface Config {
   listLimit: number
   /** Name of the project seeded when the board is opened empty. */
   defaultProjectName: string
+  /** Short-id prefix; keys look like `<keyPrefix>1`. */
+  keyPrefix: string
+  /** Activity entries kept per task before the oldest are trimmed. */
+  activityRetentionPerTask: number
 }
 
 /** Loader schema; the defaults here are the deployment's, not the library's. */
@@ -75,6 +82,8 @@ export const Config: z<Config> = z.object({
   maxTasks: z.number().step(1).min(1).default(DEFAULT_MAX_TASKS),
   listLimit: z.number().step(1).min(1).default(DEFAULT_LIST_LIMIT),
   defaultProjectName: z.string().default('Inbox'),
+  keyPrefix: z.string().min(1).default(DEFAULT_KEY_PREFIX),
+  activityRetentionPerTask: z.number().step(1).min(1).default(DEFAULT_ACTIVITY_RETENTION_PER_TASK),
 })
 
 /**
@@ -90,6 +99,23 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => () => { void domain.close() }, 'dsh-taskboard.domain.close')
 
   const store = createStore(domain)
+
+  const service = new TaskboardService({
+    store,
+    approval: ctx.approval,
+    writePolicy: config.writePolicy,
+    maxTasks: config.maxTasks,
+    keyPrefix: config.keyPrefix,
+    activityRetentionPerTask: config.activityRetentionPerTask,
+  })
+
+  // One-time short-id backfill. v0.1 records carry no `key`, and a fresh board
+  // starts the counter at 1, so the first mount of a v0.1 medium numbers its
+  // records in `createdAt` order. This is a plugin-owned bootstrap write, not a
+  // user or model write — same standing as the seed project below (the second
+  // such write in the package; ARCHITECTURE decision 19). It is idempotent: on
+  // later mounts every record already has a key, so nothing is written.
+  await service.backfillKeys()
 
   // Bootstrap seeding, not a user or model write: `create` needs a project to
   // exist, so an empty board gets one. It bypasses the approval gate on purpose
@@ -108,13 +134,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }
     await store.putProject(seed)
   }
-
-  const service = new TaskboardService({
-    store,
-    approval: ctx.approval,
-    writePolicy: config.writePolicy,
-    maxTasks: config.maxTasks,
-  })
 
   ctx.provide('taskboard', service)
   registerCommands(ctx, service, config.listLimit)

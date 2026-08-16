@@ -84,6 +84,12 @@ rows) rather than pretending the rows are optional.
 project. A global would be one more thing to validate, version, and migrate.
 Aggregates a UI wants (per-column counts) are derived from the tables.
 
+> **v0.2 amendment.** Decision 7 was deliberately reversed for one slot: the
+> short-id counter (`{ nextTaskNumber }`) is board-global by nature — it is not
+> an aggregate of the tables, it is the sequence the tables draw from. Spike S1
+> (decision 18) verified that adding the slot does not strand v0.1 mediums, so
+> the reversal is free. Everything else stays derived.
+
 **8. Export/import ships in v1 rather than v2.** The storage layer rejects a
 medium whose stamped version differs from the declared one, with no migration —
 the pre-release stance. Without an export, the first `version: 2` would strand
@@ -137,6 +143,113 @@ truncates in its own `presentResult`, where truncation costs nothing.
 
 The general rule: a tool's rendered text is an interface for the *next* tool
 call, not a status line. Design it as one.
+
+**v0.2 makes the fix structural instead of cosmetic — see decision 20: the
+rendered identifier IS the canonical short key, so there is nothing left to
+truncate.**
+
+**18. Spike S1: adding a `global` slot and an `activity` table does not reject a
+v0.1 medium — plan A, no bump.** The v0.2 spec adds a `global` slot and the
+`activity` table while keeping `DOMAIN_VERSION = 1`. The spike opened a real
+v0.1-written `taskboard.json` (three tasks: two `todo`, one `in_progress`)
+against the v0.2 spec through the real `dsh-storage-json` backend and the real
+domain layer:
+
+- The JSON backend's `parse` validates only `unit.name` and `unit.version`
+  against the stored header. `hasGlobal` and the `tables` list are NOT part of
+  the medium's stamped identity; a table missing from the medium is initialized
+  empty on load. So the descriptor change is invisible to the backend.
+- The domain layer's open validates every stored record against the new zod
+  schemas, which is where the v0.2 changes live: `todo`/`in_review` normalize
+  through `LEGACY_STATUS`, `origin`/`blockedReason` default, `key` is optional.
+  All three v0.1 records parsed.
+- The `global` slot serves `initial: { nextTaskNumber: 1 }` when the medium
+  holds none, and the first write materializes it alongside the `activity`
+  table.
+
+Conclusion recorded here so the next person does not re-run the spike: **plan A
+works, no `malformed-medium` risk.** The risk this spike was meant to retire is
+gone because the storage layer's unit identity is `name + version`, nothing
+more.
+
+**19. The `key` backfill is the package's SECOND write that does not pass
+`gate()`.** `key` cannot carry a `default` (each value must be unique), so v0.1
+records have none. `apply()` calls `service.backfillKeys()` at mount, which
+numbers keyless records in `createdAt` order and advances the counter past
+them. It is idempotent — a later mount finds nothing to write — and it runs
+before the seed-project check, so a board that needs both gets keys first. It
+sits next to the seed in the same status: a plugin-owned bootstrap write that
+is neither a user nor a model write, so there is no second party to approve.
+Unlike the seed it is not "once per medium" but "once per keyless record",
+which is why it must be re-runnable rather than guarded by a flag.
+
+**20. `key` is the identifier layer; `id` stays the primary key.** `TB-1` can
+be spoken, referenced in 3 model tokens, pasted into a commit message — a UUID
+cannot. Every lookup entry point (`task_update`, `task_claim`, `task_block`,
+`GET|PATCH /task/:ref`, `/task show`) accepts the key or the id; the service
+resolves the reference once at the top (`isKey` → scan by key, else by id). The
+`id` stays the durable primary key because backends, revisions, and imports are
+all keyed on it. The counter that mints keys lives in the domain `global` slot
+(decision 7 amendment) and is serialized on a private promise chain in the
+service — two parallel creates must not read the same number before either's
+`setGlobal` lands. Keys are never reused; a failed write after reservation
+burns a number, which is why gaps are a non-issue.
+
+The model never sees a UUID: `taskValueSchema` projects `key` and every
+`render` prints it (decision 12's fix). The one subtlety: a removed task's
+activity stream is keyed by the UUID, so once the card is gone the stream is
+only reachable by the id — the panel never needs this, since there is nothing
+to click.
+
+**21. The activity stream records who acted, when, and what — humans and agents
+in the same shape.** No "system operation" special-casing: an agent's `blocked`
+and a human's `blocked` are the same entry format differing only in `actor`.
+Entries are appended ONLY after the write is durable, so a refused or failed
+write leaves no trace — the refusal itself already lives in the session log's
+`approval/asked` + `approval/decided` pair, and duplicating it in board state
+would be a second source of truth. `from`/`to` carry the transition's endpoints
+(statuses for `status`/`blocked`, the claiming session for `claimed`, the
+initial status for `created`, the final status for `removed`, `null` for plain
+`edited`). Retention is `Config.activityRetentionPerTask` (default 50): the
+oldest entries are trimmed after each append, so a long-lived task cannot grow
+without bound. Activity is deliberately NOT exported — it is derived history,
+not state a migration must carry.
+
+**22. The status machine is organised around "whose turn it is", not "how far
+the work progressed".** `draft` waits for a human to define it, `open` can be
+claimed, `in_progress` is on an agent's hands, `awaiting_human` has the ball
+back with the human, `blocked` is an agent explicitly stuck, `done`/`cancelled`
+are terminal. This is what the v0.2 plan calls "球在谁手上" — it is the seam
+notifications, panel highlighting, and (v0.3) auto-claim hang off. The v0.1
+statuses were a work-phase model inherited from human issue trackers; they
+could not drive any of those. `blocked` is the one status v0.1 entirely lacked,
+and it carries an invariant enforced by the service: entering `blocked`
+requires a non-empty `blockedReason` (the tool `task_block` is the sanctioned
+path), leaving `blocked` clears the reason.
+
+**23. Spike S2: the official session-switch API is `ctx.sessions.open(id)` on
+the CLIENT context — no DOM, no history.** The client runtime exposes
+`ISessions` (declared on the cordis `Context` augmentation in
+`dsh-client-runtime`); `open(id)` selects the session as current, is
+synchronous, needs no page refresh, and persists the selection to
+`localStorage` (`dsh.sessions.current`). There is no deep-link parameter —
+`?session=` does not exist — so `sessions.open` is the only sanctioned path,
+and UI precedents (workflow-run panel, workspace browser, conversation header)
+use exactly this call. Two caveats recorded: `open` throws on unknown ids, so
+the panel guards with `sessions.list.getSnapshot().byId` (host rows plus the
+current addressed subagent route — wider than `ids`, which excludes
+breadcrumb-only rows) and shows a "session no longer exists" hint instead; and the host-side `dsh-session` package declares
+`ctx.sessions` as its own `SessionStore`, so in a mixed server+client typecheck
+the host augmentation wins and the client face must be recovered through its
+exported `ISessions` type.
+
+**24. The panel's status select excludes `blocked` as a target.** Blocking is
+an agent reporting that it is stuck — it requires a reason and is done through
+`task_block`. A human unblocks by moving the card anywhere else; a card already
+in `blocked` shows its own status plus the reason, and the service clears the
+reason on the way out. Making `blocked` a selectable target would force either
+a reason prompt into the panel or an error on a click, both worse than not
+offering it.
 
 **13. The invariant companion is empty, with the reason recorded.** Stored
 records are already validated by the storage seam on every load and write;
@@ -207,6 +320,16 @@ theme follows from `currentColor` but has not been checked on screen.
 
 The panel writes — see decision 15.
 
+v0.2 panel surface: seven columns (the `blocked` column and its cards carry a
+warning tint; a blocked card shows `blockedReason`), a per-column `+` that
+creates straight into that column (W5), an activity drawer per card fed by
+`GET /task/<id>/activity` newest-first (W3, decision 21), and — for a claimed
+task — the claiming session plus an "open in conversation" button that calls
+`ctx.sessions.open` through the injected sessions face (W4, decision 23). The
+seven-column layout keeps the v0.1 `minWidth` shrink-floor strategy; the floor
+drops from 180 to 160 so seven columns fit a 1280px pane before the row
+scrolls.
+
 ## Not yet built
 
 - **Workspace binding.** `Task.workspaceId` is stored and filterable, but nothing
@@ -214,4 +337,7 @@ The panel writes — see decision 15.
   cwd.
 - **Subagent claim-and-execute.** `task_claim` records the claiming session;
   handing a claimed task to a background subagent through `ctx.subagents` +
-  `ctx.jobs` is the next capability, not a v1 promise.
+  `ctx.jobs` is the next capability, not a v0.2 promise.
+- **Auto-claim (v0.3).** The v0.2 plan deliberately defers automation bound to
+  quota signals; the status machine's `open` column is the seam it will scan,
+  and `Config` leaves room for the knobs.

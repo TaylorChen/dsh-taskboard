@@ -19,6 +19,12 @@ export const DEFAULT_LIST_LIMIT = 50
 /** Hard ceiling on records accepted from one import document. */
 export const MAX_IMPORT_RECORDS = 5000
 
+/** Default short-id prefix: keys look like `TB-1`, `TB-2`, … */
+export const DEFAULT_KEY_PREFIX = 'TB'
+
+/** Default activity entries kept per task before the oldest are trimmed. */
+export const DEFAULT_ACTIVITY_RETENTION_PER_TASK = 50
+
 /** Characters of task body quoted into an approval payload before truncation. */
 export const APPROVAL_BODY_PREVIEW_CHARS = 300
 

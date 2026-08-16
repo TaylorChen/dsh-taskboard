@@ -1,12 +1,16 @@
 /**
- * Behaviour of the write gate and the optimistic-concurrency guard, over an
- * in-memory store. These are the two contracts a consumer relies on, so they
- * are tested against the service rather than through the tools.
+ * Behaviour of the write gate, the optimistic-concurrency guard, the v0.2
+ * status machine, short-id allocation, and the activity stream — over an
+ * in-memory store. These are the contracts a consumer relies on, so they are
+ * tested against the service rather than through the tools; the legacy-status
+ * alias lives in the zod schema and is tested at the schema boundary.
  */
 
 import { describe, expect, it } from 'vitest'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
-import type { Project, ProjectId, Task, TaskId } from '../src/domain.ts'
+import {
+  taskSchema, type Activity, type Project, type ProjectId, type Task, type TaskId,
+} from '../src/domain.ts'
 import { TaskboardError } from '../src/errors.ts'
 import { TaskboardService, type Actor, type ApprovalLike, type TaskboardStore } from '../src/service.ts'
 import type { WritePolicy } from '../src/defaults.ts'
@@ -16,6 +20,7 @@ const PROJECT_ID = 'project-1'
 /** In-memory provider double; mirrors the real store's sync-read/async-write split. */
 function fakeStore(): TaskboardStore & { tasks: Map<string, Task> } {
   const tasks = new Map<string, Task>()
+  const activity = new Map<string, Activity>()
   const projects = new Map<string, Project>([[PROJECT_ID, {
     id: PROJECT_ID,
     name: 'Inbox',
@@ -25,6 +30,7 @@ function fakeStore(): TaskboardStore & { tasks: Map<string, Task> } {
     createdAt: 0,
     updatedAt: 0,
   }]])
+  let global = { nextTaskNumber: 1 }
   return {
     tasks,
     listTasks: () => [...tasks.values()],
@@ -34,6 +40,11 @@ function fakeStore(): TaskboardStore & { tasks: Map<string, Task> } {
     listProjects: () => [...projects.values()],
     getProject: (id: ProjectId) => projects.get(id),
     putProject: async (project: Project) => { projects.set(project.id, project) },
+    listActivity: (taskId: TaskId) => [...activity.values()].filter(entry => entry.taskId === taskId),
+    putActivity: async (entry: Activity) => { activity.set(entry.id, entry) },
+    deleteActivity: async (id: string) => activity.delete(id as TaskId),
+    getGlobal: () => global,
+    setGlobal: async (value) => { global = value },
   }
 }
 
@@ -51,7 +62,11 @@ function fakeApproval(outcome: ApprovalOutcome | Error): ApprovalLike & { asks: 
 }
 
 /** Build a service with a controllable clock and id source. */
-function build(policy: WritePolicy, outcome: ApprovalOutcome | Error = 'allowed-once') {
+function build(
+  policy: WritePolicy,
+  outcome: ApprovalOutcome | Error = 'allowed-once',
+  overrides: Partial<ConstructorParameters<typeof TaskboardService>[0]> = {},
+) {
   const store = fakeStore()
   const approval = fakeApproval(outcome)
   let clock = 1000
@@ -61,8 +76,11 @@ function build(policy: WritePolicy, outcome: ApprovalOutcome | Error = 'allowed-
     approval,
     writePolicy: policy,
     maxTasks: 3,
+    keyPrefix: 'TB',
+    activityRetentionPerTask: 50,
     now: () => ++clock,
     newId: () => `task-${++seq}`,
+    ...overrides,
   })
   // The gate only needs an object identity for routing; the double never reads it.
   const actor: Actor = { kind: 'agent', agent: {} as never }
@@ -190,8 +208,241 @@ describe('limits and lookup', () => {
   })
 })
 
+describe('status machine', () => {
+  it('creates into the open column by default', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Ready' }, actor)
+    expect(task.status).toBe('open')
+  })
+
+  it('creates into a requested column', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Drafting', status: 'draft' }, actor)
+    expect(task.status).toBe('draft')
+  })
+
+  it('refuses to move into blocked without a reason', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    await expect(service.update(task.id as TaskId, { status: 'blocked' }, actor))
+      .rejects.toMatchObject({ code: 'invalid-input' })
+  })
+
+  it('refuses to create a task already blocked without a reason', async () => {
+    const { service, actor } = build('auto')
+    await expect(service.create({ projectId: PROJECT_ID, title: 'X', status: 'blocked' }, actor))
+      .rejects.toMatchObject({ code: 'invalid-input' })
+  })
+
+  it('blocks with a reason and clears it on leaving', async () => {
+    const { service, actor } = build('auto')
+    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+
+    const blocked = await service.block(created.key as string, 'missing API key', actor)
+    expect(blocked.status).toBe('blocked')
+    expect(blocked.blockedReason).toBe('missing API key')
+
+    const unblocked = await service.update(blocked.key as string, { status: 'in_progress' }, actor)
+    expect(unblocked.status).toBe('in_progress')
+    expect(unblocked.blockedReason).toBeNull()
+  })
+
+  it('rejects an empty block reason', async () => {
+    const { service, actor } = build('auto')
+    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    await expect(service.block(created.key as string, '  ', actor))
+      .rejects.toMatchObject({ code: 'invalid-input' })
+  })
+})
+
+describe('short ids', () => {
+  it('assigns TB-1, TB-2, … in create order', async () => {
+    const { service, actor } = build('auto')
+    const first = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const second = await service.create({ projectId: PROJECT_ID, title: 'B' }, actor)
+    expect(first.key).toBe('TB-1')
+    expect(second.key).toBe('TB-2')
+  })
+
+  it('never reuses a number after deletion', async () => {
+    const { service, actor } = build('auto')
+    const first = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    await service.create({ projectId: PROJECT_ID, title: 'B' }, actor)
+    await service.remove(first.key as string, actor)
+    const third = await service.create({ projectId: PROJECT_ID, title: 'C' }, actor)
+    expect(third.key).toBe('TB-3')
+  })
+
+  it('allocates distinct keys under parallel creates', async () => {
+    const { service, actor } = build('auto')
+    const tasks = await Promise.all([
+      service.create({ projectId: PROJECT_ID, title: 'A' }, actor),
+      service.create({ projectId: PROJECT_ID, title: 'B' }, actor),
+      service.create({ projectId: PROJECT_ID, title: 'C' }, actor),
+    ])
+    const keys = tasks.map(task => task.key).sort()
+    expect(keys).toEqual(['TB-1', 'TB-2', 'TB-3'])
+  })
+
+  it('resolves a task by key or by id alike', async () => {
+    const { service, actor } = build('auto')
+    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    await service.update(created.id as TaskId, { status: 'in_progress' }, actor)
+
+    const byKey = service.get(created.key as string)
+    const byId = service.get(created.id)
+    expect(byKey?.title).toBe('A')
+    expect(byId?.title).toBe('A')
+    expect(service.get('TB-99')).toBeUndefined()
+    expect(service.get('no-such-id')).toBeUndefined()
+  })
+
+  it('reports a missing task through either reference form', async () => {
+    const { service, actor } = build('auto')
+    await expect(service.update('TB-42', { status: 'done' }, actor))
+      .rejects.toMatchObject({ code: 'not-found' })
+  })
+
+  it('backfills keys for keyless records in createdAt order, once', async () => {
+    const { service, store } = build('auto', 'allowed-once', { maxTasks: 10 })
+    const at = 1000
+    for (const [title, createdAt] of [['Old', at], ['Middle', at + 10], ['New', at + 20]] as const) {
+      await store.putTask({
+        id: `legacy-${createdAt}`,
+        projectId: PROJECT_ID,
+        title,
+        body: '',
+        status: 'open',
+        priority: 'normal',
+        labels: [],
+        workspaceId: null,
+        claimedBySessionId: null,
+        origin: 'agent',
+        blockedReason: null,
+        revision: 0,
+        createdAt,
+        updatedAt: createdAt,
+      })
+    }
+    expect(await service.backfillKeys()).toBe(3)
+    const tasks = service.list()
+    expect(tasks.find(task => task.title === 'Old')?.key).toBe('TB-1')
+    expect(tasks.find(task => task.title === 'Middle')?.key).toBe('TB-2')
+    expect(tasks.find(task => task.title === 'New')?.key).toBe('TB-3')
+    // Idempotent: a second mount writes nothing.
+    expect(await service.backfillKeys()).toBe(0)
+    // The counter moved past the backfilled keys.
+    const fresh = await service.create(
+      { projectId: PROJECT_ID, title: 'Fresh' },
+      { kind: 'human', via: 'panel' },
+    )
+    expect(fresh.key).toBe('TB-4')
+  })
+})
+
+describe('legacy status alias', () => {
+  it('maps stored todo -> open and in_review -> awaiting_human at the schema boundary', () => {
+    const base = {
+      id: 't1',
+      projectId: PROJECT_ID,
+      title: 'Legacy',
+      body: '',
+      priority: 'normal',
+      labels: [],
+      workspaceId: null,
+      claimedBySessionId: null,
+      revision: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    } as const
+    const todo = taskSchema.parse({ ...base, status: 'todo' })
+    const inReview = taskSchema.parse({ ...base, id: 't2', status: 'in_review' })
+    expect(todo.status).toBe('open')
+    expect(inReview.status).toBe('awaiting_human')
+    // The alias does not touch valid new values.
+    expect(taskSchema.parse({ ...base, id: 't3', status: 'draft' }).status).toBe('draft')
+    // v0.1 records lack origin / key / blockedReason and still parse.
+    expect(todo.origin).toBe('agent')
+    expect(todo.key).toBeUndefined()
+    expect(todo.blockedReason).toBeNull()
+  })
+
+  it('rejects an unknown status', () => {
+    expect(() => taskSchema.parse({
+      id: 't1',
+      projectId: PROJECT_ID,
+      title: 'X',
+      body: '',
+      status: 'in_reviewx',
+      priority: 'normal',
+      labels: [],
+      workspaceId: null,
+      claimedBySessionId: null,
+      revision: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    })).toThrow()
+  })
+})
+
+describe('activity stream', () => {
+  it('records created, status, blocked, claimed, edited and removed', async () => {
+    const { service, actor } = build('auto')
+    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const updated = await service.update(created.key as string, { status: 'in_progress' }, actor)
+    const blocked = await service.block(created.key as string, 'stuck', actor)
+    const unblocked = await service.update(created.key as string, { status: 'open' }, actor)
+    await service.update(created.key as string, { claimedBySessionId: 'session-1' }, actor)
+    await service.update(created.key as string, { title: 'A2' }, actor)
+    await service.remove(created.key as string, actor)
+
+    // The card is gone; the audit trail survives, keyed by the task id.
+    // The stream is newest first (the panel's presentation order).
+    const actions = service.activityOf(created.id).map(entry => entry.action)
+    expect(actions).toEqual(['removed', 'edited', 'claimed', 'status', 'blocked', 'status', 'created'])
+    expect(updated.status).toBe('in_progress')
+    expect(blocked.status).toBe('blocked')
+    expect(unblocked.status).toBe('open')
+  })
+
+  it('records human and agent actors in the same format', async () => {
+    const { service, actor, human } = build('auto')
+    const byAgent = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const byHuman = await service.create({ projectId: PROJECT_ID, title: 'B' }, human)
+
+    const agentEntry = service.activityOf(byAgent.key as string)[0]!
+    const humanEntry = service.activityOf(byHuman.key as string)[0]!
+    expect(agentEntry.actor).toBe('agent')
+    expect(humanEntry.actor).toBe('human')
+    expect(humanEntry.actorLabel).toBe('panel')
+    // Both carry the same field shape.
+    expect(Object.keys(agentEntry).sort()).toEqual(Object.keys(humanEntry).sort())
+  })
+
+  it('records nothing when a write is refused', async () => {
+    const { service, store, actor } = build('ask', 'rejected')
+    await expect(service.create({ projectId: PROJECT_ID, title: 'Nope' }, actor))
+      .rejects.toThrow(TaskboardError)
+    expect(store.tasks.size).toBe(0)
+    expect(store.listActivity('any' as TaskId)).toHaveLength(0)
+  })
+
+  it('trims the oldest entries past the per-task retention', async () => {
+    const { service, actor } = build('auto', 'allowed-once', { activityRetentionPerTask: 3 })
+    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    for (const status of ['in_progress', 'open', 'in_progress', 'open'] as const) {
+      await service.update(created.key as string, { status }, actor)
+    }
+    const stream = service.activityOf(created.key as string)
+    // 1 create + 4 updates, retained at 3: the two oldest are gone, newest first.
+    expect(stream).toHaveLength(3)
+    expect(stream[0]?.action).toBe('status')
+    expect(stream[2]?.action).toBe('status')
+  })
+})
+
 describe('export and import', () => {
-  it('round-trips a board', async () => {
+  it('round-trips a board and keys keyless imported tasks', async () => {
     const source = build('auto')
     await source.service.create({ projectId: PROJECT_ID, title: 'Carried over' }, source.actor)
     const doc = source.service.exportAll()
@@ -200,7 +451,46 @@ describe('export and import', () => {
     const counts = await target.service.importDocument(doc, target.actor)
 
     expect(counts.tasks).toBe(1)
-    expect(target.service.list()[0]?.title).toBe('Carried over')
+    const restored = target.service.list()[0]
+    expect(restored?.title).toBe('Carried over')
+    expect(restored?.key).toBe('TB-1')
+  })
+
+  it('imports a v0.1-style document without keys', async () => {
+    const target = build('auto')
+    const v01 = {
+      schema: 'dsh-taskboard-export-v1',
+      domainVersion: 1,
+      exportedAt: 0,
+      projects: [{
+        id: 'p1',
+        name: 'Inbox',
+        description: '',
+        workspaceId: null,
+        archived: false,
+        createdAt: 0,
+        updatedAt: 0,
+      }],
+      tasks: [{
+        id: 't1',
+        projectId: 'p1',
+        title: 'Old task',
+        body: '',
+        status: 'todo',
+        priority: 'normal',
+        labels: [],
+        workspaceId: null,
+        claimedBySessionId: null,
+        revision: 0,
+        createdAt: 0,
+        updatedAt: 0,
+      }],
+    }
+    const counts = await target.service.importDocument(v01, target.actor)
+    expect(counts.tasks).toBe(1)
+    const restored = target.service.get('t1')
+    expect(restored?.status).toBe('open')
+    expect(restored?.key).toBe('TB-1')
   })
 
   it('rejects an unknown document loudly', async () => {
