@@ -293,6 +293,33 @@ entry for a claim is appended AFTER the authoritative task write, so a hard
 process exit between the two loses only the audit line, never the claim — the
 activity stream is best-effort history, the task state is authoritative.
 
+**28. v0.4 research: `workspaceRegistry` is a web-only seam, so workspace
+binding must be an optional injection.** `@deepseek-ai/dsh-workspace` provides
+`ctx.workspaceRegistry` (`Workspace { id, path, title, sessionIds }`), with
+session↔workspace membership defined by canonical-cwd equality
+(`session.header.cwd` against `workspace.path`; `resolveByPath(path)` finds the
+owning workspace). But the package is a dependency of `dsh-web-app` only —
+`dsh-base` and `dsh-headless` do not mount it. The taskboard's main row cannot
+therefore add `workspaceRegistry` to `inject` (that would fail every headless
+boot); resolution must ride `ctx.inject(['workspaceRegistry'], cb)` exactly like
+the optional `commands` peer (decision 11), and every workspace-aware behavior
+must have a defined no-registry fallback (no auto-assign, no scoping, panel
+shows no workspace name).
+
+**29. v0.4 Spike S4 (W2 pre-implementation): `ctx.subagents.start()` works
+end-to-end with a real model — the plan's risk is retired.** The V0.4 plan
+called for a 30-minute spike before building "claim → background subagent".
+It passed in a throwaway headless profile: a real agent invoked `task_subagent`
+(a `ctx.subagents.start()` caller), which created a child session whose own
+user message was exactly the delegated prompt; the child ran independently and
+answered, and the parent's `SubagentRun.result` settled with the child's output
+and a normal stop reason. Confirmed facts the W2 implementation will rely on:
+`request.prompt` becomes the child's user message, the child's id is
+`SubagentRun.id`, completion is `run.result` (never rejects on a child-level
+failure — `stopReason: 'error'` instead), and `ctx.subagents` ships in
+`dsh-base` so web and headless both have it. `ctx.jobs` remains the
+observability layer only; the core completion signal is `run.result`.
+
 **13. The invariant companion is empty, with the reason recorded.** Stored
 records are already validated by the storage seam on every load and write;
 revision monotonicity is enforced in `update` and covered by tests; the approval
