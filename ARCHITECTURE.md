@@ -480,3 +480,17 @@ scrolls.
 - **Subagent-produced subtasks.** W2 lands plain execution; turning a
   subagent's output into child tasks is a later evaluation, once real execution
   patterns are visible.
+
+**34. v0.7 (ROADMAP L4): dependencies and scheduling are the agent era's answer
+to ordering.** `dependsOn` (canonical task ids, additive) makes a task
+claimable only when every dependency is `done` or `cancelled` (`isReady`). An
+unresolvable dependency is KEPT rather than dropped — deleting a prerequisite
+must not wedge the board, it parks the dependent in not-ready until a human
+clears the reference. Cycles are rejected at write time (`assertAcyclic`, a
+bounded DFS from the written task). The auto-claim candidate is the highest-
+weight ready task (priority 4…1, then oldest `createdAt`), so ordering is
+decided by dependencies × priority × waiting, not creation order. The
+per-task `budgetTokens` caps the dispatched subagent's output via
+`agentOptions.maxTokens`; a `max-tokens` stop reason settles the task `blocked`
+with a budget-overrun reason — the token meter guards input pressure (v0.3),
+the budget guards output cost per task.

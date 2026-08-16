@@ -330,6 +330,8 @@ describe('short ids', () => {
         blockedReason: null,
         spec: null,
         evidence: null,
+        dependsOn: [],
+        budgetTokens: null,
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -522,6 +524,8 @@ describe('auto-claim', () => {
       blockedReason: null,
       spec: null,
       evidence: null,
+      dependsOn: [],
+      budgetTokens: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -688,6 +692,8 @@ describe('task spec (v0.5 L2)', () => {
       blockedReason: null,
       spec: null,
       evidence: null,
+      dependsOn: [],
+      budgetTokens: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -774,6 +780,74 @@ describe('evidence (v0.6 L3)', () => {
     expect(settled?.status).toBe('blocked')
     expect(settled?.blockedReason).toBe('subagent failed')
     expect(settled?.evidence?.summary).toBe('stuck at step 3')
+  })
+})
+
+describe('dependencies and scheduling (v0.7 L4)', () => {
+  it('stores dependencies and reports readiness', async () => {
+    const { service, actor } = build('auto')
+    const dep = await service.create(
+      { projectId: PROJECT_ID, title: 'Dep', acceptanceCriteria: ['d'] }, actor)
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Worker',
+      acceptanceCriteria: ['w'],
+      dependsOn: [dep.key as string],
+    }, actor)
+
+    expect(task.dependsOn).toEqual([dep.id])
+    // Dep is still open: not ready.
+    expect(service.isReady(task.key as string)).toBe(false)
+    await service.update(dep.key as string, { status: 'done' }, actor)
+    expect(service.isReady(task.key as string)).toBe(true)
+  })
+
+  it('treats a cancelled dependency as satisfied and a missing one as not ready', async () => {
+    const { service, actor } = build('auto')
+    const cancelled = await service.create(
+      { projectId: PROJECT_ID, title: 'Cancelled', acceptanceCriteria: ['c'] }, actor)
+    const withMissing = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Partial',
+      acceptanceCriteria: ['p'],
+      dependsOn: [cancelled.key as string, 'ghost-task-id'],
+    }, actor)
+    // The unresolvable reference is kept: a missing dependency blocks
+    // readiness until a human clears it.
+    expect(withMissing.dependsOn).toEqual([cancelled.id, 'ghost-task-id'])
+
+    await service.update(cancelled.key as string, { status: 'cancelled' }, actor)
+    // Missing dependency keeps it not ready even though the real one is done.
+    expect(service.isReady(withMissing.key as string)).toBe(false)
+    await service.update(withMissing.key as string, { dependsOn: [cancelled.key as string] }, actor)
+    expect(service.isReady(withMissing.key as string)).toBe(true)
+  })
+
+  it('rejects a dependency on itself and a two-task cycle', async () => {
+    const { service, actor } = build('auto')
+    const a = await service.create(
+      { projectId: PROJECT_ID, title: 'A', acceptanceCriteria: ['a'] }, actor)
+    await expect(service.update(a.key as string, { dependsOn: [a.key as string] }, actor))
+      .rejects.toMatchObject({ code: 'invalid-input' })
+
+    const b = await service.create(
+      { projectId: PROJECT_ID, title: 'B', acceptanceCriteria: ['b'] }, actor)
+    await service.update(a.key as string, { dependsOn: [b.key as string] }, actor)
+    await expect(service.update(b.key as string, { dependsOn: [a.key as string] }, actor))
+      .rejects.toMatchObject({ code: 'invalid-input' })
+  })
+
+  it('stores the output-token budget and clears it with null', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Budgeted',
+      acceptanceCriteria: ['b'],
+      budgetTokens: 500,
+    }, actor)
+    expect(task.budgetTokens).toBe(500)
+    const cleared = await service.update(task.key as string, { budgetTokens: null }, actor)
+    expect(cleared.budgetTokens).toBeNull()
   })
 })
 

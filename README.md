@@ -140,6 +140,18 @@ A subagent that finishes without a valid structured report settles as
 `blocked` — the board never stores half-evidence. The self-assessment is an
 accelerator for your review, not a replacement for it.
 
+## Dependencies and scheduling (v0.7)
+
+A task can declare prerequisites (`depends_on` in the tools, or `dependsOn`
+via the API): it is claimable only when every dependency is 已完成 (`done`) or
+已取消 (`cancelled`). Auto-claim picks the highest-priority ready task (urgent →
+low, then oldest first). A missing dependency parks the task in not-ready — the
+panel shows it, and clearing the reference unblocks it. Cycles are rejected.
+
+Per-task `budget_tokens` caps the executing subagent's output; a child that
+blows the budget lands the task in 遇到阻碍 (`blocked`) with a budget-overrun
+reason.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,

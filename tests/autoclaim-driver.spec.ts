@@ -62,7 +62,7 @@ function fakeAgent(sessionId: string, contextWindow: number | undefined, cwd?: s
 
 /** A fake subagent seam: records starts and lets the test settle runs. */
 function fakeSubagents() {
-  const starts: Array<{ name: string, prompt: Array<{ text?: string }>, parentId: string }> = []
+  const starts: Array<{ name: string, prompt: Array<{ text?: string }>, parentId: string, agentOptions?: unknown }> = []
   const pending: Array<{
     id: string,
     resolve: (result: { stopReason: string, structured?: unknown, output?: Array<{ text?: string }> }) => void,
@@ -77,8 +77,10 @@ function fakeSubagents() {
       output?: Array<{ text?: string }>,
     ): void => pending.shift()?.resolve({ stopReason, structured, output }),
     failNext: (message: string): void => pending.shift()?.reject(new Error(message)),
-    start: (name: string, request: { prompt: Array<{ text?: string }>, parent: { id: string } }) => {
-      starts.push({ name, prompt: request.prompt, parentId: request.parent.id })
+    start: (name: string, request: {
+      prompt: Array<{ text?: string }>, parent: { id: string }, agentOptions?: unknown,
+    }) => {
+      starts.push({ name, prompt: request.prompt, parentId: request.parent.id, agentOptions: request.agentOptions })
       return {
         id: `sub-${++seq}`,
         result: new Promise<{ stopReason: string, structured?: unknown }>((resolve, reject) => {
@@ -266,6 +268,80 @@ describe('auto-claim driver', () => {
     expect(settled?.status).toBe('blocked')
     expect(settled?.blockedReason).toContain('subagent sub-1 ended with error')
     expect(settled?.evidence?.summary).toContain('stuck at step 3')
+  })
+
+  it('does not claim a task whose dependency is unfinished (v0.7)', async () => {
+    const { service, actor, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    const dep = await service.create(
+      { projectId: PROJECT_ID, title: 'Dep', acceptanceCriteria: ['d'] }, actor)
+    await service.create({
+      projectId: PROJECT_ID,
+      title: 'Worker',
+      acceptanceCriteria: ['w'],
+      dependsOn: [dep.key as string],
+    }, actor)
+
+    emitIdle()
+    await settle()
+    // Nothing is claimable: the only open task waits on its open dependency.
+    expect(service.list({ status: 'open' }).every(t => t.claimedBySessionId === null)).toBe(true)
+
+    // Complete the dependency; the next idle event claims the worker.
+    await service.update(dep.key as string, { status: 'done' }, actor)
+    emitIdle()
+    await settle()
+    expect(service.list({ status: 'in_progress' })[0]?.title).toBe('Worker')
+  })
+
+  it('prefers a higher-priority claimable task (v0.7)', async () => {
+    const { service, actor, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    const urgent = await service.create(
+      { projectId: PROJECT_ID, title: 'Urgent', acceptanceCriteria: ['u'], priority: 'urgent' }, actor)
+    const normal = await service.create(
+      { projectId: PROJECT_ID, title: 'Normal first', acceptanceCriteria: ['n'] }, actor)
+
+    emitIdle()
+    await settle()
+
+    const claimed = service.list({ status: 'in_progress' })[0]
+    expect(claimed?.title).toBe('Urgent')
+    expect(service.get(normal.key as string)?.claimedBySessionId).toBeNull()
+    expect(service.get(urgent.key as string)?.claimedBySessionId).toBe('session-a')
+  })
+
+  it('passes the task budget as the subagent maxTokens (v0.7)', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    await service.create({
+      projectId: PROJECT_ID,
+      title: 'Budgeted',
+      acceptanceCriteria: ['b'],
+      budgetTokens: 300,
+    }, actor)
+
+    emitIdle()
+    await settle()
+
+    expect(subagents.starts[0]?.agentOptions).toEqual({ maxTokens: 300 })
+  })
+
+  it('settles a max-tokens stop as a budget overrun (v0.7)', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Blowup',
+      acceptanceCriteria: ['b'],
+      budgetTokens: 10,
+    }, actor)
+
+    emitIdle()
+    await settle()
+    subagents.settleNext('max-tokens', undefined, [{ text: 'ran out mid-way' }])
+    await settle()
+
+    const settled = service.get(task.key as string)
+    expect(settled?.status).toBe('blocked')
+    expect(settled?.blockedReason).toContain('token budget')
+    expect(settled?.evidence?.summary).toContain('ran out mid-way')
   })
 
   it('settles as error when the subagent finishes without a structured report', async () => {

@@ -160,6 +160,10 @@ export interface CreateTaskInput {
   readonly contextRefs?: readonly string[]
   /** v0.5 spec: optional closing conditions text. */
   readonly definitionOfDone?: string
+  /** v0.7: prerequisite task references (keys or ids); each must not form a cycle. */
+  readonly dependsOn?: readonly string[]
+  /** v0.7: output-token budget for the dispatched subagent; null = unlimited. */
+  readonly budgetTokens?: number | null
 }
 
 /** Fields accepted when updating a task; omitted fields keep their value. */
@@ -185,6 +189,10 @@ export interface UpdateTaskInput {
     readonly contextRefs?: readonly string[]
     readonly definitionOfDone?: string
   }
+  /** v0.7: replace the prerequisite task references (cycle-checked). */
+  readonly dependsOn?: readonly string[]
+  /** v0.7: replace the output-token budget; null clears it. */
+  readonly budgetTokens?: number | null
   /**
    * Optimistic-concurrency guard. When present and different from the stored
    * revision the write is refused with `revision-conflict` — reread and retry
@@ -357,6 +365,9 @@ export class TaskboardService {
     const requested = input.status ?? 'open'
     const status = requested === 'open' && !isSpecComplete(spec) ? 'draft' : requested
     assertBlockedInvariant(status, input.blockedReason)
+    // v0.7: resolve dependencies to ids and reject cycles.
+    const dependsOn = resolveDependencies(input.dependsOn, ref => this.resolve(ref))
+    assertAcyclic('create', dependsOn, ref => this.resolve(ref))
     // Pre-check before disturbing a human; re-checked after approval below,
     // because concurrent writes may land while the question is open.
     this.assertCapacity()
@@ -380,6 +391,8 @@ export class TaskboardService {
       blockedReason: input.blockedReason ?? null,
       spec,
       evidence: null,
+      dependsOn,
+      budgetTokens: input.budgetTokens ?? null,
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -431,6 +444,13 @@ export class TaskboardService {
         ? current.workspaceId
         : await this.resolveWorkspaceId(undefined, patch.sessionCwd)
 
+    // v0.7: replace dependencies (cycle-checked) and the budget.
+    const dependsOn = patch.dependsOn === undefined
+      ? current.dependsOn
+      : resolveDependencies(patch.dependsOn, ref => this.resolve(ref))
+    assertAcyclic(current.id, dependsOn, ref => this.resolve(ref))
+    const budgetTokens = patch.budgetTokens === undefined ? current.budgetTokens : patch.budgetTokens
+
     const next: Task = {
       ...current,
       title: patch.title ?? current.title,
@@ -444,6 +464,8 @@ export class TaskboardService {
         : patch.claimedBySessionId,
       blockedReason,
       spec,
+      dependsOn,
+      budgetTokens,
       revision: current.revision + 1,
       updatedAt: this.now(),
     }
@@ -626,6 +648,23 @@ export class TaskboardService {
    */
   evidenceOf(ref: TaskRef): TaskEvidence | null {
     return this.require(ref).evidence ?? null
+  }
+
+  /**
+   * Whether a task's dependencies are all satisfied (v0.7 W2): every
+   * `dependsOn` task is `done` or `cancelled`. A missing dependency counts as
+   * not ready (deleting a prerequisite must not crash the dependent — the
+   * panel prompts to clear it instead).
+   * @param ref - short key or full id.
+   * @returns `true` when the task may be claimed.
+   */
+  isReady(ref: TaskRef): boolean {
+    const task = this.require(ref)
+    return task.dependsOn.every(dependencyId => {
+      const dependency = this.deps.store.getTask(dependencyId as TaskId)
+      return dependency !== undefined
+        && (dependency.status === 'done' || dependency.status === 'cancelled')
+    })
   }
 
   /**
@@ -945,6 +984,53 @@ function mergeSpec(current: TaskSpec | null, patch: UpdateTaskInput['spec']): Ta
     definitionOfDone: patch.definitionOfDone === undefined
       ? current?.definitionOfDone ?? ''
       : patch.definitionOfDone,
+  }
+}
+
+/**
+ * Resolve a task's dependency references (keys or ids) to canonical ids.
+ * Unresolvable references are KEPT as-is: a dependency may have been deleted,
+ * and the dependent's readiness check treats a missing dependency as not-ready
+ * (the panel prompts to clear it) rather than wedging the board.
+ */
+function resolveDependencies(
+  refs: readonly string[] | undefined,
+  resolve: (ref: TaskRef) => Task | undefined,
+): string[] {
+  if (refs === undefined) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const ref of refs) {
+    const task = resolve(ref)
+    const canonical = task?.id ?? ref
+    if (!seen.has(canonical)) {
+      seen.add(canonical)
+      result.push(canonical)
+    }
+  }
+  return result
+}
+
+/**
+ * Reject a dependency cycle: walking `dependsOn` from the task must never
+ * revisit the task itself. The walk is bounded by the board's task count.
+ */
+function assertAcyclic(
+  owner: TaskRef,
+  dependsOn: readonly string[],
+  resolve: (ref: TaskRef) => Task | undefined,
+): void {
+  const stack = [...dependsOn]
+  const visited = new Set<string>()
+  while (stack.length > 0) {
+    const id = stack.pop() as string
+    if (id === owner) {
+      throw new TaskboardError('invalid-input', `task '${owner}' would depend on itself (cycle)`)
+    }
+    if (visited.has(id)) continue
+    visited.add(id)
+    const task = resolve(id)
+    if (task !== undefined) stack.push(...task.dependsOn)
   }
 }
 

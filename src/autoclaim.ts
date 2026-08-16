@@ -63,6 +63,7 @@ interface SubagentsLike {
       parent: Agent
       signal: AbortSignal
       outputSchema?: { type: 'object' } & Record<string, unknown>
+      agentOptions?: { maxTokens?: number }
     },
   ): Promise<{
     id: string
@@ -193,8 +194,10 @@ export function apply(ctx: Context, config: Config): void {
     // v0.4 W1: scope the scan to the session's workspace when resolvable.
     const cwd = agent.session.header?.cwd
     const workspaceId = await ctx.taskboard.workspaceIdOfCwd(cwd)
+    // v0.7 W2: only dependency-ready tasks are candidates.
     const scoped = ctx.taskboard.list({ status: 'open' }).filter(task =>
-      workspaceId === undefined || task.workspaceId === null || task.workspaceId === workspaceId)
+      (workspaceId === undefined || task.workspaceId === null || task.workspaceId === workspaceId)
+      && ctx.taskboard.isReady(task.id))
     const candidate = selectClaimCandidate(scoped)
     if (candidate === undefined) return
 
@@ -211,6 +214,10 @@ export function apply(ctx: Context, config: Config): void {
           parent: agent,
           signal: new AbortController().signal,
           outputSchema: OUTPUT_SCHEMA,
+          // v0.7 W3: a task-level output-token budget caps the child's reply.
+          ...claimed.budgetTokens === null ? {} : {
+            agentOptions: { maxTokens: claimed.budgetTokens },
+          },
         })
         await ctx.taskboard.recordDispatched(claimed.id, agent.id, run.id)
         void run.result.then(
@@ -244,9 +251,14 @@ export function apply(ctx: Context, config: Config): void {
               ))
               return
             }
+            // v0.7 W3: a child that hit its token ceiling is a budget
+            // overrun, reported distinctly from a plain failure.
+            const budgetOverrun = result.stopReason === 'max-tokens'
             void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
               kind: 'error',
-              reason: `subagent ${run.id} ended with ${result.stopReason}`,
+              reason: budgetOverrun
+                ? `subagent ${run.id} exceeded the task's token budget`
+                : `subagent ${run.id} ended with ${result.stopReason}`,
               diagnosis: tailOf(result.output),
             }).catch(error => ctx.logger.warn(
               `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
@@ -334,16 +346,27 @@ export function apply(ctx: Context, config: Config): void {
 }
 
 /**
- * Pick the oldest claimable task: `open` and unclaimed, earliest `createdAt`
- * first. Pure so the scan order is unit-testable; workspace scoping happens in
- * the driver before this filter.
- * @param tasks - tasks to scan (any status; the filter is applied here).
+ * Pick the highest-priority claimable task: `open`, unclaimed, earliest
+ * `createdAt` first within each priority band. Pure so the scheduling order is
+ * unit-testable; workspace scoping and dependency readiness are filtered by the
+ * driver before this.
+ * @param tasks - tasks to scan (any status; the filters are applied here).
  * @returns the claim candidate, or `undefined` when none is claimable.
  */
 export function selectClaimCandidate(tasks: readonly Task[]): Task | undefined {
   return tasks
     .filter(task => task.status === 'open' && task.claimedBySessionId === null)
-    .sort((a, b) => a.createdAt - b.createdAt)[0]
+    .sort((a, b) => priorityWeight(b) - priorityWeight(a) || a.createdAt - b.createdAt)[0]
+}
+
+/** Priority scheduling weight: urgent 4 … low 1 (v0.7 W2). */
+function priorityWeight(task: Task): number {
+  switch (task.priority) {
+    case 'urgent': return 4
+    case 'high': return 3
+    case 'normal': return 2
+    case 'low': return 1
+  }
 }
 
 /** The dispatch prompt handed to a background subagent (W2). */

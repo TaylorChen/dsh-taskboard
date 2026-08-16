@@ -4,6 +4,30 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [0.7.0] — 2025-08-17
+
+Dependencies and scheduling (ROADMAP L4): auto-claim stops picking the oldest
+task and starts picking the right one.
+
+### Added
+
+- **`dependsOn`** prerequisites (additive): a task is claimable only when every
+  dependency is `done` or `cancelled`; cycles are rejected at write time; an
+  unresolvable dependency is kept (parks the task in not-ready) rather than
+  dropped.
+- **Weighted candidates**: auto-claim picks the highest-priority ready task
+  (urgent → low, then oldest `createdAt`).
+- **`budgetTokens`** (additive, task-level): caps the dispatched subagent's
+  output via `maxTokens`; a `max-tokens` stop reason settles `blocked` with a
+  budget-overrun reason.
+- Real E2E (`tests/e2e/dependency-gate.mjs`): with B unfinished, A (depends on
+  B) stays unclaimed while B is claimed; after B is confirmed done, the next
+  idle event claims A.
+
+### Migration
+
+None — additive fields (`dependsOn`, `budgetTokens`).
+
 ## [0.6.0] — 2025-08-17
 
 Verification loop (ROADMAP L3): "completed" now means "completed with evidence".

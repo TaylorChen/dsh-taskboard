@@ -130,6 +130,18 @@ export const taskSchema = z.object({
   /** Session that claimed this task, or null while unclaimed. */
   claimedBySessionId: z.string().nullable(),
   /**
+   * Prerequisite task ids (ROADMAP L4, v0.7): a task is claimable only when
+   * every dependency is `done` or `cancelled`. Additive with `.default([])`,
+   * so v0.6 records read back with no dependencies.
+   */
+  dependsOn: z.array(z.string().min(1)).max(32).default([]),
+  /**
+   * Per-task output-token budget for the dispatched subagent (v0.7 W3);
+   * `null` = unlimited. A child that hits the ceiling settles the task
+   * `blocked` with a budget-exceeded diagnosis.
+   */
+  budgetTokens: z.number().int().nonnegative().nullable().default(null),
+  /**
    * Who created this task. Added after v1 shipped, so it carries a `default`
    * rather than bumping `DOMAIN_VERSION`: a stored record written before the
    * field existed still parses, and reads back as `agent`. Adding an optional
