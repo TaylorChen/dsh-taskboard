@@ -1,0 +1,8 @@
+# pnpm >=10 refuses to run a dependency's install script unless it is allowed
+# here, and pnpm 11 turns that refusal into a hard error that fails `pnpm run`
+# too. esbuild (transitively via tsdown and vitest) places its platform binary
+# in a postinstall.
+#
+# Nothing THIS package publishes runs an install script — see SECURITY.md.
+allowBuilds:
+  esbuild: true

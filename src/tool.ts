@@ -1,0 +1,253 @@
+/**
+ * The model-facing half (`@navidid/dsh-taskboard/tool`): five tools over
+ * `ctx.taskboard`. Mounted as its own cordis row so a deployment can run the
+ * board as a human-only surface by disabling this row alone.
+ *
+ * Every write here goes through the service, which owns the approval gate —
+ * nothing in this file may touch the medium. Enum-constrained parameters carry
+ * their `enum` in the schema so the tool pipeline rejects an out-of-range value
+ * before `execute` runs; model-supplied JSON is a validation boundary.
+ * @module @navidid/dsh-taskboard/tool
+ */
+
+import type { Context } from '@deepseek-ai/cordis'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
+import z from '@deepseek-ai/schemastery'
+import type {} from './index.ts'
+import type { Actor } from './service.ts'
+import { TASK_PRIORITIES, TASK_STATUSES, type Task, type TaskId } from './domain.ts'
+import { DEFAULT_LIST_LIMIT } from './defaults.ts'
+
+/** Cordis plugin name. */
+export const name = 'taskboard-tool'
+
+/** Services required before the tools can register. */
+export const inject = ['tools', 'taskboard']
+
+/** Tool-half configuration. */
+export interface Config {
+  /** Ceiling on tasks returned by one `task_list` call. */
+  listLimit: number
+}
+
+/** Loader schema with the deployment's defaults. */
+export const Config: z<Config> = z.object({
+  listLimit: z.number().step(1).min(1).default(DEFAULT_LIST_LIMIT),
+})
+
+/** The model-visible projection of a task: what a decision needs, nothing else. */
+const taskValueSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', required: true },
+    title: { type: 'string', required: true },
+    status: { type: 'string', required: true },
+    priority: { type: 'string', required: true },
+    revision: { type: 'integer', required: true },
+  },
+  additionalProperties: false,
+} as const
+
+/** One model-visible task. */
+interface TaskView {
+  id: string
+  title: string
+  status: string
+  priority: string
+  revision: number
+}
+
+/**
+ * Register the board tools.
+ * @param ctx - context carrying the tool registry and `ctx.taskboard`.
+ * @param config - validated configuration.
+ */
+export function apply(ctx: Context, config: Config): void {
+  ctx.tools.register(defineTool({
+    name: 'task_list',
+    description:
+      'List tasks on the cross-session task board. Unlike todo_write (scoped to the current '
+      + 'session), these tasks persist across sessions and workspaces.',
+    parameters: {
+      status: {
+        type: 'string',
+        enum: TASK_STATUSES,
+        description: 'Filter by board column',
+      },
+      project_id: { type: 'string', description: 'Filter by project id' },
+      limit: {
+        type: 'integer',
+        description: `Maximum tasks to return (default ${config.listLimit})`,
+      },
+    },
+    output: {
+      schema: { type: 'array', items: taskValueSchema },
+      // Ids are rendered IN FULL. `render` produces the only text the model
+      // sees — the canonical value never reaches it — so an abbreviated id here
+      // makes the model call task_update with an id that does not exist. A UI
+      // that wants a short id truncates in its own presenter.
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.length === 0
+          ? 'No matching tasks.'
+          : value.map(t => `[${t.status}] ${t.id} ${t.title} (rev ${t.revision})`).join('\n'),
+      }],
+    },
+    execute(args) {
+      return Promise.resolve(ctx.taskboard.list({
+        ...args.status === undefined ? {} : { status: args.status },
+        ...args.project_id === undefined ? {} : { projectId: args.project_id },
+        limit: args.limit ?? config.listLimit,
+      }).map(summarize))
+    },
+  }))
+
+  // Discovery: task_create needs a project id, and on an empty board no other
+  // tool can surface one. Without this the model's only move is to guess.
+  ctx.tools.register(defineTool({
+    name: 'task_projects',
+    description: 'List the projects tasks can be filed under. Call this to obtain a project_id.',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', required: true },
+            name: { type: 'string', required: true },
+            open_tasks: { type: 'integer', required: true },
+          },
+          additionalProperties: false,
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.length === 0
+          ? 'No projects.'
+          : value.map(p => `${p.id}  ${p.name} (${p.open_tasks} open)`).join('\n'),
+      }],
+    },
+    execute() {
+      return Promise.resolve(ctx.taskboard.projects()
+        .filter(project => !project.archived)
+        .map(project => ({
+          id: project.id,
+          name: project.name,
+          open_tasks: ctx.taskboard.list({ projectId: project.id })
+            .filter(task => task.status !== 'done' && task.status !== 'cancelled').length,
+        })))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'task_create',
+    description:
+      'Create a task on the cross-session board. Requires human approval under the default '
+      + 'write policy.',
+    parameters: {
+      project_id: { type: 'string', required: true, description: 'Owning project id' },
+      title: { type: 'string', required: true, description: 'Short imperative summary' },
+      body: { type: 'string', description: 'Full description' },
+      priority: {
+        type: 'string',
+        enum: TASK_PRIORITIES,
+        description: 'Task priority (default normal)',
+      },
+    },
+    output: {
+      schema: taskValueSchema,
+      render: (_args, value) => [{ type: 'text', text: `Created ${value.id} — ${value.title}` }],
+    },
+    async execute(args, exec) {
+      const task = await ctx.taskboard.create({
+        projectId: args.project_id,
+        title: args.title,
+        ...args.body === undefined ? {} : { body: args.body },
+        ...args.priority === undefined ? {} : { priority: args.priority },
+      }, actorOf(exec))
+      return summarize(task)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'task_update',
+    description:
+      'Move a task between columns or edit its fields. Pass expected_revision (from task_list) '
+      + 'to refuse the write if the task changed meanwhile. Requires human approval under the '
+      + 'default write policy.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Task id' },
+      status: { type: 'string', enum: TASK_STATUSES, description: 'Move to this board column' },
+      title: { type: 'string', description: 'New title' },
+      body: { type: 'string', description: 'New description' },
+      expected_revision: {
+        type: 'integer',
+        description: 'Revision the caller last read; a mismatch refuses the write',
+      },
+    },
+    output: {
+      schema: taskValueSchema,
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Updated ${value.id} — now ${value.status} (rev ${value.revision})`,
+      }],
+    },
+    async execute(args, exec) {
+      const task = await ctx.taskboard.update(args.id as TaskId, {
+        ...args.status === undefined ? {} : { status: args.status },
+        ...args.title === undefined ? {} : { title: args.title },
+        ...args.body === undefined ? {} : { body: args.body },
+        ...args.expected_revision === undefined ? {} : { expectedRevision: args.expected_revision },
+      }, actorOf(exec))
+      return summarize(task)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'task_claim',
+    description:
+      'Claim a task for the current session and move it to in_progress, so parallel sessions do '
+      + 'not pick up the same work.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Task id' },
+    },
+    output: {
+      schema: taskValueSchema,
+      render: (_args, value) => [{ type: 'text', text: `Claimed ${value.id} — ${value.title}` }],
+    },
+    async execute(args, exec) {
+      const task = await ctx.taskboard.update(args.id as TaskId, {
+        status: 'in_progress',
+        claimedBySessionId: exec.agent?.session.id ?? null,
+      }, actorOf(exec))
+      return summarize(task)
+    },
+  }))
+}
+
+/**
+ * Carry the execution's agent and cancellation into the service's actor face.
+ * A root call always has an agent; the optionality is the registry's, so it is
+ * forwarded rather than asserted away — a missing agent surfaces as the
+ * service's own `write-denied` under `writePolicy: 'ask'`.
+ */
+function actorOf(exec: ToolRunContext): Actor {
+  return {
+    kind: 'agent',
+    ...exec.agent === undefined ? {} : { agent: exec.agent },
+    signal: exec.signal,
+  }
+}
+
+/** Project one stored task onto the model-visible fields. */
+function summarize(task: Task): TaskView {
+  return {
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    priority: task.priority,
+    revision: task.revision,
+  }
+}
