@@ -49,6 +49,7 @@ const taskValueSchema = {
     status: { type: 'string', required: true },
     priority: { type: 'string', required: true },
     revision: { type: 'integer', required: true },
+    project_id: { type: 'string', required: true },
     acceptance_criteria: { type: 'array', items: { type: 'string' }, required: true },
   },
   additionalProperties: false,
@@ -61,6 +62,7 @@ interface TaskView {
   status: string
   priority: string
   revision: number
+  project_id: string
   acceptance_criteria: string[]
 }
 
@@ -181,7 +183,20 @@ export function apply(ctx: Context, config: Config): void {
     },
     output: {
       schema: taskValueSchema,
-      render: (_args, value) => [{ type: 'text', text: `Created ${value.key} — ${value.title}` }],
+      // v0.8 (L5): the create result also surfaces related completed tasks, so
+      // the model can reuse what a previous execution learned instead of
+      // exploring from scratch.
+      render: (_args, value) => {
+        const lines = [`Created ${value.key} — ${value.title}`]
+        const related = ctx.taskboard.relatedExperience({ projectId: value.project_id, limit: 3 })
+        if (related.length > 0) {
+          lines.push('Related experience:')
+          for (const card of related) {
+            lines.push(`- ${card.key} ${card.title} — ${clip(card.summary, 120)}`)
+          }
+        }
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
     },
     async execute(args, exec) {
       const task = await ctx.taskboard.create({
@@ -335,6 +350,12 @@ function summarize(task: Task): TaskView {
     status: task.status,
     priority: task.priority,
     revision: task.revision,
+    project_id: task.projectId,
     acceptance_criteria: task.spec?.acceptanceCriteria ?? [],
   }
+}
+
+/** Bound text quoted into a rendered line. */
+function clip(text: string, length: number): string {
+  return text.length <= length ? text : `${text.slice(0, length)}…`
 }

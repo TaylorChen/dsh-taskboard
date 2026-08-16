@@ -494,3 +494,20 @@ per-task `budgetTokens` caps the dispatched subagent's output via
 `agentOptions.maxTokens`; a `max-tokens` stop reason settles the task `blocked`
 with a budget-overrun reason — the token meter guards input pressure (v0.3),
 the budget guards output cost per task.
+
+**35. v0.8 (ROADMAP L5): history is input, not archive.** A completed task
+already carries the full knowledge of one execution — `spec.criteria` (what
+was to be done), `evidence` (what was produced and concluded) — so an
+experience card needs no new field: `relatedExperience` projects done tasks
+(with non-empty summaries) into `{ key, title, criteria, artifacts, summary }`
+cards, newest first, filterable by project/workspace/label. Two injection
+points make that history live: `task_create`'s rendered result appends up to
+three related cards (the model sees "TB-7 did something similar — …" before it
+starts exploring), and — opt-in via `Config.sessionContext` (off by default,
+bounded by `sessionContextLimit`) — the driver injects a
+`<taskboard_session_context>` digest (open work + related experience for the
+session's workspace) into a new session's first pre-step through
+`agent.inject`, which does not wake the driver. Both paths are bounded so the
+digest cannot balloon the context. This is the closure of the v0.2 plan's
+"任务板是会话的组织层": the board now seeds a session with what it needs to
+know instead of waiting to be asked.

@@ -217,6 +217,15 @@ export interface ListFilter {
  */
 export type TaskRef = string
 
+/** A completed task's experience card (v0.8 L5): what one execution knew. */
+export interface ExperienceCard {
+  readonly key: string
+  readonly title: string
+  readonly criteria: readonly string[]
+  readonly artifacts: readonly string[]
+  readonly summary: string
+}
+
 /** A task's activity stream, newest first (the presentation order). */
 export type ActivityStream = readonly Activity[]
 
@@ -665,6 +674,40 @@ export class TaskboardService {
       return dependency !== undefined
         && (dependency.status === 'done' || dependency.status === 'cancelled')
     })
+  }
+
+  /**
+   * Retrieve relevant completed tasks as experience cards (ROADMAP L5, v0.8):
+   * done tasks carry the full knowledge of one execution — what was to be done
+   * (spec criteria), what was produced and concluded (evidence) — and can feed
+   * the next task instead of forcing a fresh exploration. Tasks without a
+   * summary are excluded (no content, no injection value).
+   * @param filter - narrowing terms; every field is an AND term.
+   * @returns done-task experience cards, newest completion first, capped by
+   * `limit` (default 5).
+   */
+  relatedExperience(filter: {
+    projectId?: string
+    workspaceId?: string | null
+    label?: string
+    limit?: number
+  } = {}): readonly ExperienceCard[] {
+    const limit = filter.limit ?? 5
+    return this.deps.store.listTasks()
+      .filter(task => task.status === 'done')
+      .filter(task => task.evidence !== null && task.evidence.summary !== '')
+      .filter(task => filter.projectId === undefined || task.projectId === filter.projectId)
+      .filter(task => filter.workspaceId === undefined || task.workspaceId === filter.workspaceId)
+      .filter(task => filter.label === undefined || task.labels.includes(filter.label))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, limit)
+      .map(task => ({
+        key: task.key ?? task.id,
+        title: task.title,
+        criteria: task.spec?.acceptanceCriteria ?? [],
+        artifacts: task.evidence?.artifacts ?? [],
+        summary: task.evidence?.summary ?? '',
+      }))
   }
 
   /**

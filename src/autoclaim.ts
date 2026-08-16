@@ -123,12 +123,22 @@ export interface Config {
    * can name it here.
    */
   subagentProvider: string
+  /**
+   * v0.8 (L5): inject a task-board context digest into a new session's first
+   * pre-step (via `agent.inject`, which does not wake the driver). Off by
+   * default — the digest costs context, and opt-in keeps the board quiet.
+   */
+  sessionContext: boolean
+  /** v0.8: how many of each digest section (open tasks / experience cards). */
+  sessionContextLimit: number
 }
 
 /** Loader schema with the deployment's defaults. */
 export const Config: z<Config> = z.object({
   minRemainingTokens: z.number().step(1).min(0).default(8000),
   subagentProvider: z.string().min(1).default('spawn'),
+  sessionContext: z.boolean().default(false),
+  sessionContextLimit: z.number().step(1).min(1).default(5),
 })
 
 /** How much task body the dispatch prompt quotes; the agent can re-read via tools. */
@@ -330,7 +340,13 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => {
     const onCreated = ({ agent }: { agent: Agent }): void => { void stateFor(agent) }
     const onDisposed = ({ agent }: { agent: Agent }): void => { states.delete(agent) }
-    const onSessionStart = ({ agent }: { agent: Agent }): void => { void stateFor(agent) }
+    const onSessionStart = ({ agent }: { agent: Agent }): void => {
+      void stateFor(agent)
+      // v0.8 (L5): seed a fresh session with the board's relevant state —
+      // open work and related completed experience — as context for the first
+      // pre-step, without waking the driver.
+      if (config.sessionContext) void injectSessionContext(ctx, config, agent)
+    }
     const onStatus = ({ agent, status }: { agent: Agent, status: string }): void => {
       if (status === 'idle') requestDrive(stateFor(agent))
     }
@@ -343,6 +359,54 @@ export function apply(ctx: Context, config: Config): void {
       states.clear()
     }
   }, 'dsh-taskboard.autoclaim')
+}
+
+/**
+ * Build and inject the session context digest (v0.8): open work and related
+ * experience for the session's workspace, capped so the digest cannot balloon
+ * the context. Uses `agent.inject`, which queues model-facing context for the
+ * next pre-step without waking the driver.
+ */
+async function injectSessionContext(
+  ctx: Context,
+  config: Config,
+  agent: Agent,
+): Promise<void> {
+  try {
+    const cwd = agent.session.header?.cwd
+    const workspaceId = await ctx.taskboard.workspaceIdOfCwd(cwd)
+    const inWorkspace = (id: string | null): boolean =>
+      workspaceId === undefined || id === null || id === workspaceId
+
+    const open = ctx.taskboard.list({ status: 'open' })
+      .filter(task => inWorkspace(task.workspaceId))
+      .slice(0, config.sessionContextLimit)
+    const experience = ctx.taskboard.relatedExperience({
+      workspaceId: workspaceId === undefined ? undefined : workspaceId,
+      limit: config.sessionContextLimit,
+    })
+
+    const sections: string[] = []
+    if (open.length > 0) {
+      sections.push('Open tasks (claimable):\n' + open
+        .map(task => `- ${task.key ?? task.id} ${task.title}`).join('\n'))
+    }
+    if (experience.length > 0) {
+      sections.push('Related experience:\n' + experience
+        .map(card => `- ${card.key} ${card.title} — ${clip(card.summary, 80)}`).join('\n'))
+    }
+    if (sections.length === 0) return
+
+    const digest = `<taskboard_session_context>\n${sections.join('\n\n')}\n</taskboard_session_context>`
+    agent.inject(createUserMessage({
+      content: [{ type: 'text', text: digest }],
+      source: { kind: 'taskboard', key: 'session-context' },
+    }))
+  } catch (error) {
+    ctx.logger.warn(
+      `taskboard-autoclaim: could not inject session context for agent "${agent.id}": ${renderThrown(error)}`,
+    )
+  }
 }
 
 /**
@@ -413,6 +477,11 @@ function bounded(text: string): string {
   return text.length <= BODY_PREVIEW_CHARS
     ? text
     : `${text.slice(0, BODY_PREVIEW_CHARS)}… (${text.length} chars total)`
+}
+
+/** Bound text quoted into a digest line. */
+function clip(text: string, length: number): string {
+  return text.length <= length ? text : `${text.slice(0, length)}…`
 }
 
 /** Whether an unknown structured value is a usable task-evidence report. */

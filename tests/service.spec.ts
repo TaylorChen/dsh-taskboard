@@ -851,6 +851,43 @@ describe('dependencies and scheduling (v0.7 L4)', () => {
   })
 })
 
+describe('experience cards (v0.8 L5)', () => {
+  it('returns done tasks with evidence summaries, newest first', async () => {
+    const { service, actor } = build('auto')
+    const old = await service.create(
+      { projectId: PROJECT_ID, title: 'Old', acceptanceCriteria: ['a'] }, actor)
+    await service.autoClaim(old.key as string, 'session-a')
+    await service.settleDispatch(old.key as string, 'session-a', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'a', met: true, note: '' }], artifacts: [], summary: 'old done' },
+    })
+    // Confirm to done.
+    await service.update(old.key as string, { status: 'done' }, actor)
+
+    const fresh = await service.create(
+      { projectId: PROJECT_ID, title: 'Fresh', acceptanceCriteria: ['b'] }, actor)
+    await service.autoClaim(fresh.key as string, 'session-a')
+    await service.settleDispatch(fresh.key as string, 'session-a', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'b', met: true, note: '' }], artifacts: ['x.txt'], summary: 'fresh done' },
+    })
+    await service.update(fresh.key as string, { status: 'done' }, actor)
+
+    const cards = service.relatedExperience({ projectId: PROJECT_ID })
+    expect(cards.map(card => card.key)).toEqual([fresh.key, old.key])
+    expect(cards[0]?.summary).toBe('fresh done')
+    expect(cards[0]?.artifacts).toEqual(['x.txt'])
+  })
+
+  it('excludes done tasks without a summary', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Silent', acceptanceCriteria: ['a'] }, actor)
+    await service.update(task.key as string, { status: 'done' }, actor)
+    expect(service.relatedExperience()).toHaveLength(0)
+  })
+})
+
 describe('export and import', () => {
   it('round-trips a board and keys keyless imported tasks', async () => {
     const source = build('auto')

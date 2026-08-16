@@ -4,6 +4,30 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [0.8.0] — 2025-08-17
+
+Knowledge layer (ROADMAP L5): the board's history stops being an archive and
+starts feeding the next task.
+
+### Added
+
+- **Experience cards**: `relatedExperience` projects done tasks (with evidence
+  summaries) into `{ key, title, criteria, artifacts, summary }`, newest first,
+  filterable by project / workspace / label. No schema change — the cards are
+  derived from what tasks already carry.
+- **Create-time injection**: `task_create`'s result lists up to three related
+  completed tasks ("Related experience"), so the model can reuse prior
+  conclusions instead of exploring from scratch.
+- **Session context** (opt-in, off by default): `sessionContext: true` on the
+  auto-claim row injects a bounded digest of open work + related experience
+  into a new session's first turn via `agent.inject` (no wake).
+- Real E2E (`tests/e2e/experience-feed.mjs`): the session log carries the
+  injected digest and the create result references the seeded experience.
+
+### Migration
+
+None — additive config only; the digest is opt-in.
+
 ## [0.7.0] — 2025-08-17
 
 Dependencies and scheduling (ROADMAP L4): auto-claim stops picking the oldest

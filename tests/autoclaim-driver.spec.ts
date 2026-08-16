@@ -45,6 +45,7 @@ function fakeStore(): TaskboardStore {
 /** A minimal agent double: idle, with a claimed context and a followup spy. */
 function fakeAgent(sessionId: string, contextWindow: number | undefined, cwd?: string) {
   const followups: unknown[] = []
+  const injections: unknown[] = []
   const agent = {
     id: sessionId,
     status: 'idle' as const,
@@ -56,8 +57,9 @@ function fakeAgent(sessionId: string, contextWindow: number | undefined, cwd?: s
         : { provider: 'deepseek', model: 'demo', contextWindow },
     },
     followup: (message: unknown): void => { followups.push(message) },
+    inject: (message: unknown): void => { injections.push(message) },
   }
-  return { agent, followups }
+  return { agent, followups, injections }
 }
 
 /** A fake subagent seam: records starts and lets the test settle runs. */
@@ -126,6 +128,8 @@ interface Rig {
   actor: Actor
   /** Follow-up turns the driver queued via `agent.followup` (fallback path). */
   followups: unknown[]
+  /** Context digests the driver injected via `agent.inject` (v0.8). */
+  injections: unknown[]
   /** Emit an idle transition for the rig's own agent. */
   emitIdle: () => void
   settle: () => Promise<void>
@@ -141,8 +145,8 @@ interface Rig {
 function rig(
   contextWindow: number | undefined,
   minRemainingTokens: number,
-  options: { workspaceCwd?: string, withSubagents?: boolean } = {},
-): Rig & { subagents: ReturnType<typeof fakeSubagents> } {
+  options: { workspaceCwd?: string, withSubagents?: boolean, sessionContext?: boolean } = {},
+): Rig & { subagents: ReturnType<typeof fakeSubagents>, injections: unknown[] } {
   const store = fakeStore()
   const service = new TaskboardService({
     store,
@@ -158,7 +162,7 @@ function rig(
     service.setWorkspaceResolver(async (cwd) => (cwd === options.workspaceCwd ? 'ws-a' : undefined))
   }
   const subagents = fakeSubagents()
-  const { agent, followups } = fakeAgent('session-a', contextWindow, options.workspaceCwd)
+  const { agent, followups, injections } = fakeAgent('session-a', contextWindow, options.workspaceCwd)
   const ctx = fakeCtx({
     agents: {
       get: (id: string) => (id === agent.id ? agent : undefined),
@@ -171,6 +175,8 @@ function rig(
   apply(ctx as unknown as Parameters<typeof apply>[0], {
     minRemainingTokens,
     subagentProvider: 'spawn',
+    sessionContext: options.sessionContext ?? false,
+    sessionContextLimit: 5,
   })
   const actor: Actor = { kind: 'human', via: 'panel' }
   return {
@@ -178,6 +184,7 @@ function rig(
     ctx,
     actor,
     followups,
+    injections,
     subagents,
     emitIdle: () => ctx.emit('agent/status', { agent, status: 'idle' }),
     settle: () => new Promise(resolve => setTimeout(resolve, 10)),

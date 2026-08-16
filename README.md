@@ -152,6 +152,21 @@ Per-task `budget_tokens` caps the executing subagent's output; a child that
 blows the budget lands the task in 遇到阻碍 (`blocked`) with a budget-overrun
 reason.
 
+## Experience feeds the next task (v0.8)
+
+Completed tasks with evidence become **experience cards**. Two places reuse
+them:
+
+- **Create**: `task_create`'s result lists up to three related completed tasks
+  ("Related experience"), so the model can reuse what a previous execution
+  learned instead of exploring from scratch.
+- **Session start** (opt-in): set `sessionContext: true` on the auto-claim row
+  to inject a digest of open work + related experience into a new session's
+  first turn. Bounded by `sessionContextLimit` (default 5 each).
+
+The history of the board is deliberately live: a done task's evidence is the
+next task's context.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
