@@ -162,7 +162,10 @@ function rig(
     taskboard: service,
     ...options.withSubagents ? { subagents } : {},
   })
-  apply(ctx as unknown as Parameters<typeof apply>[0], { minRemainingTokens })
+  apply(ctx as unknown as Parameters<typeof apply>[0], {
+    minRemainingTokens,
+    subagentProvider: 'spawn',
+  })
   const actor: Actor = { kind: 'human', via: 'panel' }
   return {
     service,
@@ -215,6 +218,7 @@ describe('auto-claim driver', () => {
     expect(claimed?.claimedBySessionId).toBe('session-a')
     // Dispatched to a subagent, not a follow-up turn.
     expect(subagents.starts).toHaveLength(1)
+    expect(subagents.starts[0]?.name).toBe('spawn')
     expect(subagents.starts[0]?.prompt[0]?.text).toContain('TB-1')
     expect(subagents.starts[0]?.prompt[0]?.text).toContain('Oldest')
     expect(subagents.starts[0]?.parentId).toBe('session-a')

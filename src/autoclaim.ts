@@ -76,11 +76,18 @@ export interface Config {
    * context, where the follow-up turn would immediately overflow.
    */
   minRemainingTokens: number
+  /**
+   * The `ctx.subagents` provider to dispatch with (v0.4 W2). `spawn` is the
+   * in-process provider dsh-base registers; a deployment with another provider
+   * can name it here.
+   */
+  subagentProvider: string
 }
 
 /** Loader schema with the deployment's defaults. */
 export const Config: z<Config> = z.object({
   minRemainingTokens: z.number().step(1).min(0).default(8000),
+  subagentProvider: z.string().min(1).default('spawn'),
 })
 
 /** How much task body the dispatch prompt quotes; the agent can re-read via tools. */
@@ -159,7 +166,7 @@ export function apply(ctx: Context, config: Config): void {
     // starting it fails.
     if (subagents !== undefined) {
       try {
-        const run = await subagents.start('taskboard', {
+        const run = await subagents.start(config.subagentProvider, {
           prompt: [{ type: 'text', text: renderDispatchPrompt(claimed) }],
           parent: agent,
           signal: new AbortController().signal,
