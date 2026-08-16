@@ -38,6 +38,7 @@ import {
   type TaskboardGlobal,
   type TaskId,
   type TaskPriority,
+  type TaskSpec,
   type TaskStatus,
 } from './domain.ts'
 import { TaskboardError } from './errors.ts'
@@ -152,6 +153,12 @@ export interface CreateTaskInput {
    */
   readonly sessionCwd?: string
   readonly blockedReason?: string | null
+  /** v0.5 spec: acceptance criteria (the hard gate for entering `open`). */
+  readonly acceptanceCriteria?: readonly string[]
+  /** v0.5 spec: file/commit/issue references the executor should read. */
+  readonly contextRefs?: readonly string[]
+  /** v0.5 spec: optional closing conditions text. */
+  readonly definitionOfDone?: string
 }
 
 /** Fields accepted when updating a task; omitted fields keep their value. */
@@ -171,6 +178,12 @@ export interface UpdateTaskInput {
   readonly sessionCwd?: string
   /** Why the task is (or is being moved to) `blocked`; cleared on leaving. */
   readonly blockedReason?: string | null
+  /** v0.5 spec partial update: merge onto the existing spec, if any. */
+  readonly spec?: {
+    readonly acceptanceCriteria?: readonly string[]
+    readonly contextRefs?: readonly string[]
+    readonly definitionOfDone?: string
+  }
   /**
    * Optimistic-concurrency guard. When present and different from the stored
    * revision the write is refused with `revision-conflict` — reread and retry
@@ -335,7 +348,13 @@ export class TaskboardService {
     if (this.deps.store.getProject(input.projectId as ProjectId) === undefined) {
       throw new TaskboardError('not-found', `project '${input.projectId}' does not exist`)
     }
-    const status = input.status ?? 'open'
+    const spec = buildSpec(input)
+    // v0.5: `open` means executable, and executable means a complete spec. A
+    // create that asks for `open` without acceptance criteria lands in
+    // `draft` instead of failing — the model creates tasks far more often than
+    // it specs them, so this is a graceful queue, not an error.
+    const requested = input.status ?? 'open'
+    const status = requested === 'open' && !isSpecComplete(spec) ? 'draft' : requested
     assertBlockedInvariant(status, input.blockedReason)
     // Pre-check before disturbing a human; re-checked after approval below,
     // because concurrent writes may land while the question is open.
@@ -358,6 +377,7 @@ export class TaskboardService {
       claimedBySessionId: null,
       origin: actor.kind,
       blockedReason: input.blockedReason ?? null,
+      spec,
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -390,6 +410,17 @@ export class TaskboardService {
       ? null
       : patch.blockedReason === undefined ? current.blockedReason : patch.blockedReason
     assertBlockedInvariant(status, blockedReason)
+    // v0.5 spec: a partial update merges onto the existing spec (or creates
+    // one); entering `open` requires a complete spec. The gate is on the
+    // TRANSITION only — a task already in `open` without a spec (pre-v0.5) is
+    // not blocked from other edits, per the migration note in the plan.
+    const spec = mergeSpec(current.spec, patch.spec)
+    if (status === 'open' && current.status !== 'open' && !isSpecComplete(spec)) {
+      throw new TaskboardError(
+        'invalid-input',
+        'a task entering open needs a complete spec: at least one acceptance criterion',
+      )
+    }
     // An explicit workspaceId wins; an unbound task binds to the acting
     // session's workspace when the seam can resolve it (v0.4 W1).
     const workspaceId = patch.workspaceId !== undefined
@@ -410,6 +441,7 @@ export class TaskboardService {
         ? current.claimedBySessionId
         : patch.claimedBySessionId,
       blockedReason,
+      spec,
       revision: current.revision + 1,
       updatedAt: this.now(),
     }
@@ -853,6 +885,48 @@ function actorFields(actor: Actor): { actor: 'human' | 'agent', actorLabel: stri
     : { actor: 'agent', actorLabel: actor.agent?.session?.id ?? 'agent' }
 }
 
+/**
+ * Whether a spec is executable (v0.5): present and carrying at least one
+ * acceptance criterion. `contextRefs` are a soft hint — verification-style
+ * tasks may legitimately have no file references — so they are not part of
+ * the hard gate; the panel surfaces their absence as a suggestion.
+ * @param spec - the task's spec, or `null` when unspecified.
+ * @returns `true` when the task may enter `open`.
+ */
+export function isSpecComplete(spec: TaskSpec | null): boolean {
+  return spec !== null && spec.acceptanceCriteria.length > 0
+}
+
+/** Build a spec block from create input; `null` when no spec field was given. */
+function buildSpec(input: CreateTaskInput): TaskSpec | null {
+  if (
+    input.acceptanceCriteria === undefined
+    && input.contextRefs === undefined
+    && input.definitionOfDone === undefined
+  ) return null
+  return {
+    acceptanceCriteria: [...(input.acceptanceCriteria ?? [])],
+    contextRefs: [...(input.contextRefs ?? [])],
+    definitionOfDone: input.definitionOfDone ?? '',
+  }
+}
+
+/** Merge a partial spec update onto the existing spec (or create one). */
+function mergeSpec(current: TaskSpec | null, patch: UpdateTaskInput['spec']): TaskSpec | null {
+  if (patch === undefined) return current
+  return {
+    acceptanceCriteria: patch.acceptanceCriteria === undefined
+      ? current?.acceptanceCriteria ?? []
+      : [...patch.acceptanceCriteria],
+    contextRefs: patch.contextRefs === undefined
+      ? current?.contextRefs ?? []
+      : [...patch.contextRefs],
+    definitionOfDone: patch.definitionOfDone === undefined
+      ? current?.definitionOfDone ?? ''
+      : patch.definitionOfDone,
+  }
+}
+
 /** The invariant that ties the status to its reason. */
 function assertBlockedInvariant(status: TaskStatus, reason: string | null | undefined): void {
   if (status === 'blocked' && (reason === undefined || reason === null || reason.trim() === '')) {
@@ -870,6 +944,9 @@ function describe(task: Task): string {
     `status: ${task.status}  priority: ${task.priority}`,
     task.labels.length > 0 ? `labels: ${task.labels.join(', ')}` : undefined,
     task.blockedReason === null ? undefined : `blocked: ${preview(task.blockedReason)}`,
+    task.spec === null || task.spec.acceptanceCriteria.length === 0
+      ? undefined
+      : `criteria: ${task.spec.acceptanceCriteria.join('; ')}`,
     task.body === '' ? undefined : `body: ${preview(task.body)}`,
   ].filter(line => line !== undefined).join('\n')
 }

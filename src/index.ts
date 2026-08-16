@@ -36,7 +36,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export { TaskboardService } from './service.ts'
+export { TaskboardService, isSpecComplete } from './service.ts'
 export type {
   Actor, ActivityStream, CreateTaskInput, ListFilter, TaskRef, TaskboardStore, UpdateTaskInput,
 } from './service.ts'
@@ -44,11 +44,11 @@ export { selectClaimCandidate } from './autoclaim.ts'
 export { TaskboardError } from './errors.ts'
 export type { TaskboardErrorCode } from './errors.ts'
 export {
-  ACTIVITY_ACTIONS, DOMAIN_VERSION, EXPORT_SCHEMA, TASK_PRIORITIES, TASK_STATUSES,
+  ACTIVITY_ACTIONS, DOMAIN_VERSION, EXPORT_SCHEMA, TASK_PRIORITIES, TASK_STATUSES, taskSpecSchema,
 } from './domain.ts'
 export type {
   Activity, ActivityAction, ActivityId, ExportDocument, Project, ProjectId, Task, TaskId,
-  TaskPriority, TaskStatus, TaskboardGlobal,
+  TaskPriority, TaskSpec, TaskStatus, TaskboardGlobal,
 } from './domain.ts'
 
 /** Cordis plugin name. */

@@ -49,6 +49,7 @@ const taskValueSchema = {
     status: { type: 'string', required: true },
     priority: { type: 'string', required: true },
     revision: { type: 'integer', required: true },
+    acceptance_criteria: { type: 'array', items: { type: 'string' }, required: true },
   },
   additionalProperties: false,
 } as const
@@ -60,6 +61,7 @@ interface TaskView {
   status: string
   priority: string
   revision: number
+  acceptance_criteria: string[]
 }
 
 /**
@@ -93,7 +95,10 @@ export function apply(ctx: Context, config: Config): void {
         type: 'text',
         text: value.length === 0
           ? 'No matching tasks.'
-          : value.map(t => `[${t.status}] ${t.key} ${t.title} (rev ${t.revision})`).join('\n'),
+          : value.map(t => [
+            `[${t.status}] ${t.key} ${t.title} (rev ${t.revision})`,
+            t.acceptance_criteria.length === 0 ? undefined : `    criteria: ${t.acceptance_criteria.join('; ')}`,
+          ].filter(line => line !== undefined).join('\n')).join('\n'),
       }],
     },
     execute(args) {
@@ -152,10 +157,21 @@ export function apply(ctx: Context, config: Config): void {
       project_id: { type: 'string', required: true, description: 'Owning project id' },
       title: { type: 'string', required: true, description: 'Short imperative summary' },
       body: { type: 'string', description: 'Full description' },
+      acceptance_criteria: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Checkable success conditions. Without at least one, the task lands in draft, not open.',
+      },
+      context_refs: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Files, commits, or issues the executor should read (e.g. src/foo.ts, #42)',
+      },
+      definition_of_done: { type: 'string', description: 'Optional closing conditions text' },
       status: {
         type: 'string',
         enum: TASK_STATUSES,
-        description: 'Board column to create in (default open)',
+        description: 'Board column to create in (default draft unless acceptance_criteria are given)',
       },
       priority: {
         type: 'string',
@@ -174,6 +190,11 @@ export function apply(ctx: Context, config: Config): void {
         ...args.body === undefined ? {} : { body: args.body },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.priority === undefined ? {} : { priority: args.priority },
+        ...args.acceptance_criteria === undefined
+          ? {} : { acceptanceCriteria: args.acceptance_criteria },
+        ...args.context_refs === undefined ? {} : { contextRefs: args.context_refs },
+        ...args.definition_of_done === undefined
+          ? {} : { definitionOfDone: args.definition_of_done },
         // v0.4 W1: an unbound task binds to the workspace owning this cwd
         // when the optional workspace seam is available.
         ...exec.agent?.session.header.cwd === undefined
@@ -196,6 +217,17 @@ export function apply(ctx: Context, config: Config): void {
       status: { type: 'string', enum: TASK_STATUSES, description: 'Move to this board column' },
       title: { type: 'string', description: 'New title' },
       body: { type: 'string', description: 'New description' },
+      acceptance_criteria: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Checkable success conditions; entering open requires at least one',
+      },
+      context_refs: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Files, commits, or issues the executor should read',
+      },
+      definition_of_done: { type: 'string', description: 'Optional closing conditions text' },
       expected_revision: {
         type: 'integer',
         description: 'Revision the caller last read; a mismatch refuses the write',
@@ -209,10 +241,19 @@ export function apply(ctx: Context, config: Config): void {
       }],
     },
     async execute(args, exec) {
+      const specFields = {
+        ...args.acceptance_criteria !== undefined && args.acceptance_criteria.length > 0
+          ? { acceptanceCriteria: args.acceptance_criteria } : {},
+        ...args.context_refs !== undefined && args.context_refs.length > 0
+          ? { contextRefs: args.context_refs } : {},
+        ...args.definition_of_done !== undefined
+          ? { definitionOfDone: args.definition_of_done } : {},
+      }
       const task = await ctx.taskboard.update(args.id, {
         ...args.status === undefined ? {} : { status: args.status },
         ...args.title === undefined ? {} : { title: args.title },
         ...args.body === undefined ? {} : { body: args.body },
+        ...Object.keys(specFields).length > 0 ? { spec: specFields } : {},
         ...args.expected_revision === undefined ? {} : { expectedRevision: args.expected_revision },
       }, actorOf(exec))
       return summarize(task)
@@ -294,5 +335,6 @@ function summarize(task: Task): TaskView {
     status: task.status,
     priority: task.priority,
     revision: task.revision,
+    acceptance_criteria: task.spec?.acceptanceCriteria ?? [],
   }
 }

@@ -185,9 +185,9 @@ describe('auto-claim driver', () => {
   it('scopes the scan to the session\'s workspace (W1)', async () => {
     const { service, actor, emitIdle, settle } = rig(128_000, 0, { workspaceCwd: '/home/work' })
     const mine = await service.create(
-      { projectId: PROJECT_ID, title: 'Mine', sessionCwd: '/home/work' }, actor)
-    const unbound = await service.create({ projectId: PROJECT_ID, title: 'Global' }, actor)
-    await service.create({ projectId: PROJECT_ID, title: 'Theirs' }, actor)
+      { projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Mine', sessionCwd: '/home/work' }, actor)
+    const unbound = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Global' }, actor)
+    await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Theirs' }, actor)
     // A foreign-workspace task: bind it explicitly to another workspace.
     await service.update('TB-3', { workspaceId: 'ws-b' }, actor)
 
@@ -207,8 +207,8 @@ describe('auto-claim driver', () => {
   it('claims the oldest open task and hands it to a background subagent (W2)', async () => {
     const { service, actor, subagents, followups, emitIdle, settle } = rig(
       128_000, 5000, { withSubagents: true })
-    const first = await service.create({ projectId: PROJECT_ID, title: 'Oldest' }, actor)
-    await service.create({ projectId: PROJECT_ID, title: 'Newer' }, actor)
+    const first = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Oldest' }, actor)
+    await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Newer' }, actor)
 
     emitIdle()
     await settle()
@@ -228,7 +228,7 @@ describe('auto-claim driver', () => {
 
   it('settles a completed dispatch to awaiting_human', async () => {
     const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Ship it' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Ship it' }, actor)
 
     emitIdle()
     await settle()
@@ -243,7 +243,7 @@ describe('auto-claim driver', () => {
 
   it('settles a failed dispatch to blocked with a reason', async () => {
     const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Doomed' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Doomed' }, actor)
 
     emitIdle()
     await settle()
@@ -257,7 +257,7 @@ describe('auto-claim driver', () => {
 
   it('falls back to a follow-up turn when the subagent seam is absent', async () => {
     const { service, actor, followups, emitIdle, settle } = rig(128_000, 5000)
-    const first = await service.create({ projectId: PROJECT_ID, title: 'Oldest' }, actor)
+    const first = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Oldest' }, actor)
 
     emitIdle()
     await settle()
@@ -271,7 +271,7 @@ describe('auto-claim driver', () => {
 
   it('does nothing when the quota is too tight', async () => {
     const { service, actor, emitIdle, settle } = rig(128_000, 1_000_000)
-    await service.create({ projectId: PROJECT_ID, title: 'No budget' }, actor)
+    await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'No budget' }, actor)
 
     emitIdle()
     await settle()
@@ -281,7 +281,7 @@ describe('auto-claim driver', () => {
 
   it('does nothing when the capacity is unknown', async () => {
     const { service, actor, emitIdle, settle } = rig(undefined, 0)
-    await service.create({ projectId: PROJECT_ID, title: 'No capacity info' }, actor)
+    await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'No capacity info' }, actor)
 
     emitIdle()
     await settle()
@@ -291,7 +291,7 @@ describe('auto-claim driver', () => {
 
   it('does not double-claim on a second idle event', async () => {
     const { service, actor, emitIdle, settle } = rig(128_000, 0)
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Once' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Once' }, actor)
 
     emitIdle()
     await settle()

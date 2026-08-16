@@ -361,6 +361,21 @@ chain: seeded `open` task → `claimed` → `dispatched` (child session id) →
 `completed` → `awaiting_human`, with the child session's own log carrying the
 dispatch prompt.
 
+**32. v0.5 (ROADMAP L2): `open` means executable, and executable means a
+complete spec.** A task's executable specification lives in `spec {
+acceptanceCriteria, contextRefs, definitionOfDone }`; the hard gate is
+`isSpecComplete` — present and at least one acceptance criterion. `contextRefs`
+are deliberately a soft hint (verification-style tasks may have no file
+references), surfaced as a suggestion rather than a gate. Two enforcement
+points: a `create` asking for `open` without a complete spec lands in `draft`
+(a graceful queue — the model creates far more often than it specs), and an
+`update` may only TRANSITION into `open` with a complete spec. The transition
+gate deliberately does not re-gate tasks already sitting in `open` without a
+spec (pre-v0.5 records keep working; the panel prompts to complete them).
+Spec updates are partial merges onto the existing block. The dispatch prompt
+now quotes the acceptance criteria so the executing subagent verifies against
+them — this is what makes the field load-bearing rather than decorative.
+
 **13. The invariant companion is empty, with the reason recorded.** Stored
 records are already validated by the storage seam on every load and write;
 revision monotonicity is enforced in `update` and covered by tests; the approval

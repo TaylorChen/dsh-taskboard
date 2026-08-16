@@ -106,6 +106,12 @@ export function apply(ctx: Context): void {
         ...typeof input.body === 'string' ? { body: input.body } : {},
         ...status === undefined ? {} : { status },
         ...priority === undefined ? {} : { priority },
+        ...Array.isArray(input.acceptance_criteria)
+          ? { acceptanceCriteria: input.acceptance_criteria as string[] } : {},
+        ...Array.isArray(input.context_refs)
+          ? { contextRefs: input.context_refs as string[] } : {},
+        ...typeof input.definition_of_done === 'string'
+          ? { definitionOfDone: input.definition_of_done } : {},
       }, PANEL)
       json(res, 201, task)
     })
@@ -145,12 +151,21 @@ export function apply(ctx: Context): void {
       const input = body as Record<string, unknown>
       const status = isStatus(input.status) ? input.status : undefined
       const priority = isPriority(input.priority) ? input.priority : undefined
+      const spec = {
+        ...Array.isArray(input.acceptance_criteria)
+          ? { acceptanceCriteria: input.acceptance_criteria as string[] } : {},
+        ...Array.isArray(input.context_refs)
+          ? { contextRefs: input.context_refs as string[] } : {},
+        ...typeof input.definition_of_done === 'string'
+          ? { definitionOfDone: input.definition_of_done } : {},
+      }
       const task = await ctx.taskboard.update(tail, {
         ...status === undefined ? {} : { status },
         ...priority === undefined ? {} : { priority },
         ...typeof input.title === 'string' ? { title: input.title } : {},
         ...typeof input.body === 'string' ? { body: input.body } : {},
         ...typeof input.blockedReason === 'string' ? { blockedReason: input.blockedReason } : {},
+        ...Object.keys(spec).length > 0 ? { spec } : {},
         ...typeof input.expectedRevision === 'number'
           ? { expectedRevision: input.expectedRevision }
           : {},

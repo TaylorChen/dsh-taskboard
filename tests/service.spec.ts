@@ -91,7 +91,7 @@ function build(
 describe('write gate', () => {
   it('asks once per write and stores after approval', async () => {
     const { service, store, approval, actor } = build('ask')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Ship it' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Ship it' }, actor)
 
     expect(approval.asks).toHaveLength(1)
     expect(approval.asks[0]).toContain('[dsh-taskboard] create')
@@ -101,39 +101,39 @@ describe('write gate', () => {
 
   it('stores nothing when the human rejects', async () => {
     const { service, store, actor } = build('ask', 'rejected')
-    await expect(service.create({ projectId: PROJECT_ID, title: 'Nope' }, actor))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Nope' }, actor))
       .rejects.toThrow(TaskboardError)
     expect(store.tasks.size).toBe(0)
   })
 
   it("refuses rather than auto-allowing when approval is unavailable", async () => {
     const { service, store, actor } = build('ask', new Error('no open turn'))
-    await expect(service.create({ projectId: PROJECT_ID, title: 'Between turns' }, actor))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Between turns' }, actor))
       .rejects.toMatchObject({ code: 'write-denied' })
     expect(store.tasks.size).toBe(0)
   })
 
   it("refuses an 'ask' write with no agent to ask through", async () => {
     const { service } = build('ask')
-    await expect(service.create({ projectId: PROJECT_ID, title: 'Headless' }, { kind: 'agent' }))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Headless' }, { kind: 'agent' }))
       .rejects.toMatchObject({ code: 'write-denied' })
   })
 
   it("writes without asking under 'auto'", async () => {
     const { service, approval, actor } = build('auto')
-    await service.create({ projectId: PROJECT_ID, title: 'Unattended' }, actor)
+    await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Unattended' }, actor)
     expect(approval.asks).toHaveLength(0)
   })
 
   it("refuses every write under 'off'", async () => {
     const { service, actor } = build('off')
-    await expect(service.create({ projectId: PROJECT_ID, title: 'Read only' }, actor))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Read only' }, actor))
       .rejects.toMatchObject({ code: 'write-denied' })
   })
 
   it('lets a human write without asking anyone', async () => {
     const { service, store, approval, human } = build('ask')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Typed by hand' }, human)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Typed by hand' }, human)
 
     // The human IS the authority: asking them to approve their own click is
     // ceremony, so the approval seam is never consulted.
@@ -144,21 +144,21 @@ describe('write gate', () => {
 
   it("still refuses a human write under 'off'", async () => {
     const { service, human } = build('off')
-    await expect(service.create({ projectId: PROJECT_ID, title: 'Read only' }, human))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Read only' }, human))
       .rejects.toMatchObject({ code: 'write-denied' })
   })
 
   it('records who created each task', async () => {
     const { service, actor, human } = build('auto')
-    const byAgent = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
-    const byHuman = await service.create({ projectId: PROJECT_ID, title: 'B' }, human)
+    const byAgent = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
+    const byHuman = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'B' }, human)
     expect(byAgent.origin).toBe('agent')
     expect(byHuman.origin).toBe('human')
   })
 
   it('quotes the complete before/after into an update approval', async () => {
     const { service, approval, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Old title' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Old title' }, actor)
 
     const asking = build('ask')
     await asking.store.putTask(task)
@@ -174,7 +174,7 @@ describe('write gate', () => {
 describe('optimistic concurrency', () => {
   it('bumps revision on every update', async () => {
     const { service, actor } = build('auto')
-    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const created = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
     expect(created.revision).toBe(0)
 
     const updated = await service.update(created.id as TaskId, { status: 'in_progress' }, actor)
@@ -183,7 +183,7 @@ describe('optimistic concurrency', () => {
 
   it('refuses a stale expectedRevision', async () => {
     const { service, actor } = build('auto')
-    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const created = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
     await service.update(created.id as TaskId, { status: 'in_progress' }, actor)
 
     await expect(service.update(created.id as TaskId, { status: 'done', expectedRevision: 0 }, actor))
@@ -197,7 +197,7 @@ describe('limits and lookup', () => {
     for (const title of ['a', 'b', 'c']) {
       await service.create({ projectId: PROJECT_ID, title }, actor)
     }
-    await expect(service.create({ projectId: PROJECT_ID, title: 'd' }, actor))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'd' }, actor))
       .rejects.toMatchObject({ code: 'limit-exceeded' })
   })
 
@@ -209,34 +209,43 @@ describe('limits and lookup', () => {
 })
 
 describe('status machine', () => {
-  it('creates into the open column by default', async () => {
+  it('creates into draft by default without acceptance criteria (v0.5)', async () => {
     const { service, actor } = build('auto')
     const task = await service.create({ projectId: PROJECT_ID, title: 'Ready' }, actor)
+    expect(task.status).toBe('draft')
+    expect(task.spec).toBeNull()
+  })
+
+  it('creates into open when the spec is complete', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Ready', acceptanceCriteria: ['works'] }, actor)
     expect(task.status).toBe('open')
+    expect(task.spec?.acceptanceCriteria).toEqual(['works'])
   })
 
   it('creates into a requested column', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Drafting', status: 'draft' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Drafting', status: 'draft' }, actor)
     expect(task.status).toBe('draft')
   })
 
   it('refuses to move into blocked without a reason', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
     await expect(service.update(task.id as TaskId, { status: 'blocked' }, actor))
       .rejects.toMatchObject({ code: 'invalid-input' })
   })
 
   it('refuses to create a task already blocked without a reason', async () => {
     const { service, actor } = build('auto')
-    await expect(service.create({ projectId: PROJECT_ID, title: 'X', status: 'blocked' }, actor))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'X', status: 'blocked' }, actor))
       .rejects.toMatchObject({ code: 'invalid-input' })
   })
 
   it('blocks with a reason and clears it on leaving', async () => {
     const { service, actor } = build('auto')
-    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const created = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
 
     const blocked = await service.block(created.key as string, 'missing API key', actor)
     expect(blocked.status).toBe('blocked')
@@ -249,7 +258,7 @@ describe('status machine', () => {
 
   it('rejects an empty block reason', async () => {
     const { service, actor } = build('auto')
-    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const created = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
     await expect(service.block(created.key as string, '  ', actor))
       .rejects.toMatchObject({ code: 'invalid-input' })
   })
@@ -258,27 +267,27 @@ describe('status machine', () => {
 describe('short ids', () => {
   it('assigns TB-1, TB-2, … in create order', async () => {
     const { service, actor } = build('auto')
-    const first = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
-    const second = await service.create({ projectId: PROJECT_ID, title: 'B' }, actor)
+    const first = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
+    const second = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'B' }, actor)
     expect(first.key).toBe('TB-1')
     expect(second.key).toBe('TB-2')
   })
 
   it('never reuses a number after deletion', async () => {
     const { service, actor } = build('auto')
-    const first = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
-    await service.create({ projectId: PROJECT_ID, title: 'B' }, actor)
+    const first = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
+    await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'B' }, actor)
     await service.remove(first.key as string, actor)
-    const third = await service.create({ projectId: PROJECT_ID, title: 'C' }, actor)
+    const third = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'C' }, actor)
     expect(third.key).toBe('TB-3')
   })
 
   it('allocates distinct keys under parallel creates', async () => {
     const { service, actor } = build('auto')
     const tasks = await Promise.all([
-      service.create({ projectId: PROJECT_ID, title: 'A' }, actor),
-      service.create({ projectId: PROJECT_ID, title: 'B' }, actor),
-      service.create({ projectId: PROJECT_ID, title: 'C' }, actor),
+      service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor),
+      service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'B' }, actor),
+      service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'C' }, actor),
     ])
     const keys = tasks.map(task => task.key).sort()
     expect(keys).toEqual(['TB-1', 'TB-2', 'TB-3'])
@@ -286,7 +295,7 @@ describe('short ids', () => {
 
   it('resolves a task by key or by id alike', async () => {
     const { service, actor } = build('auto')
-    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const created = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
     await service.update(created.id as TaskId, { status: 'in_progress' }, actor)
 
     const byKey = service.get(created.key as string)
@@ -319,6 +328,7 @@ describe('short ids', () => {
         claimedBySessionId: null,
         origin: 'agent',
         blockedReason: null,
+        spec: null,
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -333,7 +343,7 @@ describe('short ids', () => {
     expect(await service.backfillKeys()).toBe(0)
     // The counter moved past the backfilled keys.
     const fresh = await service.create(
-      { projectId: PROJECT_ID, title: 'Fresh' },
+      { projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Fresh' },
       { kind: 'human', via: 'panel' },
     )
     expect(fresh.key).toBe('TB-4')
@@ -388,7 +398,7 @@ describe('legacy status alias', () => {
 describe('activity stream', () => {
   it('records created, status, blocked, claimed, edited and removed', async () => {
     const { service, actor } = build('auto')
-    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const created = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
     const updated = await service.update(created.key as string, { status: 'in_progress' }, actor)
     const blocked = await service.block(created.key as string, 'stuck', actor)
     const unblocked = await service.update(created.key as string, { status: 'open' }, actor)
@@ -407,8 +417,8 @@ describe('activity stream', () => {
 
   it('records human and agent actors in the same format', async () => {
     const { service, actor, human } = build('auto')
-    const byAgent = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
-    const byHuman = await service.create({ projectId: PROJECT_ID, title: 'B' }, human)
+    const byAgent = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
+    const byHuman = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'B' }, human)
 
     const agentEntry = service.activityOf(byAgent.key as string)[0]!
     const humanEntry = service.activityOf(byHuman.key as string)[0]!
@@ -421,7 +431,7 @@ describe('activity stream', () => {
 
   it('records nothing when a write is refused', async () => {
     const { service, store, actor } = build('ask', 'rejected')
-    await expect(service.create({ projectId: PROJECT_ID, title: 'Nope' }, actor))
+    await expect(service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Nope' }, actor))
       .rejects.toThrow(TaskboardError)
     expect(store.tasks.size).toBe(0)
     expect(store.listActivity('any' as TaskId)).toHaveLength(0)
@@ -429,7 +439,7 @@ describe('activity stream', () => {
 
   it('trims the oldest entries past the per-task retention', async () => {
     const { service, actor } = build('auto', 'allowed-once', { activityRetentionPerTask: 3 })
-    const created = await service.create({ projectId: PROJECT_ID, title: 'A' }, actor)
+    const created = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'A' }, actor)
     for (const status of ['in_progress', 'open', 'in_progress', 'open'] as const) {
       await service.update(created.key as string, { status }, actor)
     }
@@ -444,7 +454,7 @@ describe('activity stream', () => {
 describe('auto-claim', () => {
   it('claims an open task for the session and records the activity', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Pick me' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Pick me' }, actor)
 
     const claimed = await service.autoClaim(task.key as string, 'session-auto')
 
@@ -461,7 +471,7 @@ describe('auto-claim', () => {
 
   it('returns null for an already-claimed task', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Taken' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Taken' }, actor)
     await service.autoClaim(task.key as string, 'session-a')
 
     await expect(service.autoClaim(task.key as string, 'session-b')).resolves.toBeNull()
@@ -470,7 +480,7 @@ describe('auto-claim', () => {
 
   it('returns null for a task that is not open', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Drafting', status: 'draft' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Drafting', status: 'draft' }, actor)
     await expect(service.autoClaim(task.key as string, 'session-a')).resolves.toBeNull()
   })
 
@@ -481,7 +491,7 @@ describe('auto-claim', () => {
 
   it('lets only one of two parallel claims win', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Contested' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Contested' }, actor)
     const [first, second] = await Promise.all([
       service.autoClaim(task.key as string, 'session-a'),
       service.autoClaim(task.key as string, 'session-b'),
@@ -509,6 +519,7 @@ describe('auto-claim', () => {
       claimedBySessionId: null,
       origin: 'human',
       blockedReason: null,
+      spec: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -524,7 +535,7 @@ describe('workspace binding (v0.4 W1)', () => {
     const { service, actor } = build('auto')
     service.setWorkspaceResolver(async (cwd) => (cwd === '/home/work' ? 'ws-a' : undefined))
     const task = await service.create(
-      { projectId: PROJECT_ID, title: 'Bound', sessionCwd: '/home/work' }, actor)
+      { projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Bound', sessionCwd: '/home/work' }, actor)
     expect(task.workspaceId).toBe('ws-a')
   })
 
@@ -532,21 +543,21 @@ describe('workspace binding (v0.4 W1)', () => {
     const { service, actor } = build('auto')
     service.setWorkspaceResolver(async () => undefined)
     const unowned = await service.create(
-      { projectId: PROJECT_ID, title: 'Unowned', sessionCwd: '/elsewhere' }, actor)
+      { projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Unowned', sessionCwd: '/elsewhere' }, actor)
     expect(unowned.workspaceId).toBeNull()
   })
 
   it('does not bind without the workspace seam', async () => {
     const { service, actor } = build('auto')
     const task = await service.create(
-      { projectId: PROJECT_ID, title: 'No seam', sessionCwd: '/home/work' }, actor)
+      { projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'No seam', sessionCwd: '/home/work' }, actor)
     expect(task.workspaceId).toBeNull()
   })
 
   it('binds an unbound task on claim (update with sessionCwd)', async () => {
     const { service, actor } = build('auto')
     service.setWorkspaceResolver(async (cwd) => (cwd === '/home/work' ? 'ws-a' : undefined))
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Claim me' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Claim me' }, actor)
     expect(task.workspaceId).toBeNull()
 
     const claimed = await service.update(task.key as string, {
@@ -563,7 +574,7 @@ describe('workspace binding (v0.4 W1)', () => {
   it('binds an unbound task on auto-claim', async () => {
     const { service, actor } = build('auto')
     service.setWorkspaceResolver(async (cwd) => (cwd === '/home/work' ? 'ws-a' : undefined))
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Auto' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Auto' }, actor)
     const claimed = await service.autoClaim(task.key as string, 'session-a', '/home/work')
     expect(claimed?.workspaceId).toBe('ws-a')
   })
@@ -580,7 +591,7 @@ describe('workspace binding (v0.4 W1)', () => {
 describe('subagent dispatch (v0.4 W2)', () => {
   it('records a dispatch and settles completed to awaiting_human', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Shipped' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Shipped' }, actor)
     await service.autoClaim(task.key as string, 'session-a')
 
     const dispatched = await service.recordDispatched(task.key as string, 'session-a', 'sub-1')
@@ -595,7 +606,7 @@ describe('subagent dispatch (v0.4 W2)', () => {
 
   it('settles an error to blocked with the reason', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Failed' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Failed' }, actor)
     await service.autoClaim(task.key as string, 'session-a')
 
     const settled = await service.settleDispatch(task.key as string, 'session-a', {
@@ -608,7 +619,7 @@ describe('subagent dispatch (v0.4 W2)', () => {
 
   it('refuses to settle a task the human moved meanwhile', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Touched' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Touched' }, actor)
     await service.autoClaim(task.key as string, 'session-a')
     await service.update(task.key as string, { status: 'done' }, actor)
 
@@ -619,7 +630,7 @@ describe('subagent dispatch (v0.4 W2)', () => {
 
   it('refuses a dispatch or settle from a different session', async () => {
     const { service, actor } = build('auto')
-    const task = await service.create({ projectId: PROJECT_ID, title: 'Mine' }, actor)
+    const task = await service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Mine' }, actor)
     await service.autoClaim(task.key as string, 'session-a')
 
     await expect(service.recordDispatched(task.key as string, 'session-b', 'sub-9')).resolves.toBeNull()
@@ -629,10 +640,103 @@ describe('subagent dispatch (v0.4 W2)', () => {
   })
 })
 
+describe('task spec (v0.5 L2)', () => {
+  it('downgrades a no-spec create requesting open to draft', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'No spec', status: 'open' }, actor)
+    expect(task.status).toBe('draft')
+  })
+
+  it('refuses moving into open without acceptance criteria', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Drafting' }, actor)
+    await expect(service.update(task.key as string, { status: 'open' }, actor))
+      .rejects.toMatchObject({ code: 'invalid-input' })
+  })
+
+  it('allows draft -> open once criteria are supplied', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Drafting' }, actor)
+    const opened = await service.update(task.key as string, {
+      status: 'open',
+      spec: { acceptanceCriteria: ['compiles', 'tests pass'] },
+    }, actor)
+    expect(opened.status).toBe('open')
+    expect(opened.spec?.acceptanceCriteria).toEqual(['compiles', 'tests pass'])
+  })
+
+  it('does not re-gate a pre-v0.5 open task without a spec', async () => {
+    const { service, store, actor } = build('auto')
+    await store.putTask({
+      id: 'legacy-open',
+      key: 'TB-1',
+      projectId: PROJECT_ID,
+      title: 'Legacy open',
+      body: '',
+      status: 'open',
+      priority: 'normal',
+      labels: [],
+      workspaceId: null,
+      claimedBySessionId: null,
+      origin: 'agent',
+      blockedReason: null,
+      spec: null,
+      revision: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    const updated = await service.update('TB-1', { title: 'Touched' }, actor)
+    expect(updated.status).toBe('open')
+  })
+
+  it('merges a partial spec update without dropping existing fields', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Spec', acceptanceCriteria: ['a'] }, actor)
+    const withRefs = await service.update(task.key as string, {
+      spec: { contextRefs: ['src/foo.ts'] },
+    }, actor)
+    expect(withRefs.spec?.acceptanceCriteria).toEqual(['a'])
+    expect(withRefs.spec?.contextRefs).toEqual(['src/foo.ts'])
+    expect(withRefs.spec?.definitionOfDone).toBe('')
+  })
+
+  it('creates a spec block from a partial update on a spec-less task', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Empty' }, actor)
+    const updated = await service.update(task.key as string, {
+      spec: { definitionOfDone: 'ship it' },
+    }, actor)
+    expect(updated.spec?.definitionOfDone).toBe('ship it')
+    expect(updated.spec?.acceptanceCriteria).toEqual([])
+    expect(updated.spec?.contextRefs).toEqual([])
+  })
+
+  it('keeps old records readable with spec null (schema boundary)', () => {
+    const parsed = taskSchema.parse({
+      id: 't1',
+      projectId: PROJECT_ID,
+      title: 'Legacy',
+      body: '',
+      status: 'open',
+      priority: 'normal',
+      labels: [],
+      workspaceId: null,
+      claimedBySessionId: null,
+      origin: 'agent',
+      revision: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    expect(parsed.spec).toBeNull()
+  })
+})
+
 describe('export and import', () => {
   it('round-trips a board and keys keyless imported tasks', async () => {
     const source = build('auto')
-    await source.service.create({ projectId: PROJECT_ID, title: 'Carried over' }, source.actor)
+    await source.service.create({ projectId: PROJECT_ID, acceptanceCriteria: ['done'], title: 'Carried over' }, source.actor)
     const doc = source.service.exportAll()
 
     const target = build('auto')

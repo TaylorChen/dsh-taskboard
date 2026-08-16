@@ -109,6 +109,23 @@ Moving into `blocked` requires a reason (use `task_block`); leaving `blocked`
 clears it. Blocking is an agent's report — the panel does not offer it as a
 move target, a human unblocks by moving the card anywhere else.
 
+## Task specs (v0.5)
+
+A task is only *claimable* when its **spec is complete** — at least one
+acceptance criterion. This is the gate between `draft` and `open`: a task
+without criteria stays in 待立项 (`draft`), and the panel says what is missing.
+The agent's `task_create` / `task_update` accept:
+
+| Field | Meaning |
+| --- | --- |
+| `acceptance_criteria` | Checkable success conditions (the gate; the executing subagent verifies each) |
+| `context_refs` | Files / commits / issues the executor should read (soft hint) |
+| `definition_of_done` | Optional closing conditions text |
+
+Creating a task without `acceptance_criteria` lands it in `draft` rather than
+failing; complete the spec (via `task_update` or the API) and move it to
+`open` to make it claimable.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,

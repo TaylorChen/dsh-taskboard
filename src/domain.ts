@@ -65,6 +65,21 @@ export const TASK_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const
 export type TaskPriority = (typeof TASK_PRIORITIES)[number]
 
 /**
+ * A task's executable specification (ROADMAP L2, v0.5): the intent, made
+ * self-contained enough for an agent that shares no human team memory.
+ * `acceptanceCriteria` are the checkable success conditions (the hard gate for
+ * entering `open`); `contextRefs` point at files/commits/issues the executor
+ * should read (a soft hint); `definitionOfDone` is optional closing text.
+ */
+export const taskSpecSchema = z.object({
+  acceptanceCriteria: z.array(z.string().min(1)).max(32).default([]),
+  contextRefs: z.array(z.string().min(1)).max(32).default([]),
+  definitionOfDone: z.string().max(2000).default(''),
+})
+/** One task's executable specification. */
+export type TaskSpec = z.infer<typeof taskSpecSchema>
+
+/**
  * One persisted task. `revision` is the optimistic-concurrency counter: a
  * caller that read revision N and writes with `expectedRevision: N` loses to
  * any write that landed meanwhile, rather than silently clobbering it.
@@ -109,6 +124,13 @@ export const taskSchema = z.object({
    * Model-visible text — see SECURITY.md.
    */
   blockedReason: z.string().max(2000).nullable().default(null),
+  /**
+   * The executable specification (v0.5, ROADMAP L2). `null` = not specified
+   * yet — a task can only enter `open` when its spec is complete (see
+   * `isSpecComplete` in the service). Additive with `.default(null)`, so v0.4
+   * records read back as unspecified.
+   */
+  spec: taskSpecSchema.nullable().default(null),
   revision: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),

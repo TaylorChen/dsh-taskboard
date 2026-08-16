@@ -4,6 +4,34 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [0.5.0] — 2025-08-17
+
+Task specs (ROADMAP L2): the board stops being a tracker of intentions and
+starts gating executability.
+
+### Added
+
+- **`spec` block** on every task: `acceptanceCriteria` (the hard gate),
+  `contextRefs` (soft hint), `definitionOfDone` (optional). Additive field —
+  v0.4 records read back with `spec: null`.
+- **`draft` means "spec incomplete"**: a `create` asking for `open` without
+  acceptance criteria lands in `draft`; an `update` may only *transition into*
+  `open` with a complete spec (pre-v0.5 `open` tasks are not re-gated). Spec
+  updates are partial merges.
+- **Tools**: `task_create` / `task_update` accept `acceptance_criteria` /
+  `context_refs` / `definition_of_done`; `task_list` renders the criteria.
+- **Dispatch**: the auto-claim subagent prompt quotes the acceptance criteria
+  to verify against, and the fallback follow-up does the same.
+- **Panel**: draft cards show "缺少验收标准" (hard) and a context-ref hint
+  (soft); non-draft cards with criteria show them.
+- Real E2E (`tests/e2e/spec-gate.mjs`): model creates without criteria →
+  `draft`; adds criteria + `open`; auto-claim dispatches a subagent that
+  settles to `awaiting_human`.
+
+### Migration
+
+None — additive, no schema change to stored shape (new optional field).
+
 ## [0.4.0] — 2025-08-16
 
 Workspace binding and subagent execution: the board's "organizing layer"

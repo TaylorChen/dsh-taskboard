@@ -62,6 +62,7 @@ interface BoardTask {
   workspaceId: string | null
   blockedReason: string | null
   claimedBySessionId: string | null
+  spec: { acceptanceCriteria: string[], contextRefs: string[], definitionOfDone: string } | null
 }
 
 /** One project as the board route serves it. */
@@ -379,6 +380,30 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                       {task.blockedReason !== null && (
                         <div style={{ fontSize: 11, color: BLOCKED_TINT, marginBottom: 6, lineHeight: 1.35 }}>
                           {t('blocked.reason')} {task.blockedReason}
+                        </div>
+                      )}
+                      {/* v0.5: a draft task's spec completeness is the gate to
+                          open; surface what is missing so it can be completed. */}
+                      {task.status === 'draft' && task.spec === null && (
+                        <div style={{ fontSize: 11, color: BLOCKED_TINT, marginBottom: 6 }}>
+                          {t('spec.missingCriteria')}
+                        </div>
+                      )}
+                      {task.status === 'draft' && task.spec !== null && task.spec.acceptanceCriteria.length === 0 && (
+                        <div style={{ fontSize: 11, color: BLOCKED_TINT, marginBottom: 6 }}>
+                          {t('spec.missingCriteria')}
+                        </div>
+                      )}
+                      {task.status === 'draft' && task.spec !== null && task.spec.contextRefs.length === 0 && task.spec.acceptanceCriteria.length > 0 && (
+                        <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>
+                          {t('spec.suggestRefs')}
+                        </div>
+                      )}
+                      {task.spec !== null && task.spec.acceptanceCriteria.length > 0 && task.status !== 'draft' && (
+                        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6, lineHeight: 1.35 }}>
+                          {task.spec.acceptanceCriteria.map((criterion, index) => (
+                            <div key={index}>✓ {criterion}</div>
+                          ))}
                         </div>
                       )}
                       {task.labels.length > 0 && (

@@ -281,10 +281,20 @@ export function selectClaimCandidate(tasks: readonly Task[]): Task | undefined {
 /** The dispatch prompt handed to a background subagent (W2). */
 function renderDispatchPrompt(task: Task): string {
   const key = task.key ?? task.id
+  const spec = task.spec
   return [
     `You were assigned task ${key} on the task board: ${task.title}.`,
     'Work on it in this session. When finished, report your result as your final message.',
     'Do not modify the task board yourself — the dispatcher records your outcome.',
+    spec === null || spec.acceptanceCriteria.length === 0
+      ? undefined
+      : `\nAcceptance criteria (verify each):\n${spec.acceptanceCriteria.map(c => `- ${c}`).join('\n')}`,
+    spec === null || spec.contextRefs.length === 0
+      ? undefined
+      : `\nContext to read:\n${spec.contextRefs.join('\n')}`,
+    spec !== null && spec.definitionOfDone !== ''
+      ? `\nDefinition of done: ${spec.definitionOfDone}`
+      : undefined,
     task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
   ].filter(line => line !== undefined).join('\n')
 }
@@ -292,9 +302,13 @@ function renderDispatchPrompt(task: Task): string {
 /** The fallback follow-up turn handed to the claiming session (v0.3 path). */
 function renderFollowup(task: Task): string {
   const key = task.key ?? task.id
+  const spec = task.spec
   return [
     `You claimed ${key} on the task board: ${task.title}.`,
     'Work on it now in this session; report progress on the task when done.',
+    spec === null || spec.acceptanceCriteria.length === 0
+      ? undefined
+      : `\nAcceptance criteria (verify each):\n${spec.acceptanceCriteria.map(c => `- ${c}`).join('\n')}`,
     task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
   ].filter(line => line !== undefined).join('\n')
 }
