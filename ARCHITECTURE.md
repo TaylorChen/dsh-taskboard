@@ -350,6 +350,17 @@ not `open`, so nothing can claim it again). When the subagent seam is absent,
 the driver falls back to the v0.3 follow-up turn in the claiming session —
 defensive, since `dsh-base` ships the seam everywhere.
 
+**One trap found by the real end-to-end run:** `ctx.subagents.start(name, …)`
+takes the *provider* name, not a label — passing `'taskboard'` throws "no
+provider" and the driver silently fell back to the follow-up path. The provider
+is now `Config.subagentProvider`, default `'spawn'` (the in-process provider
+`dsh-subagent-spawn-in-process` registers on `dsh-base`). The real E2E
+(`tests/e2e/full-chain.mjs`, which boots a profile WITHOUT the one-shot
+headless runner and keeps the process alive) passes with the full evidence
+chain: seeded `open` task → `claimed` → `dispatched` (child session id) →
+`completed` → `awaiting_human`, with the child session's own log carrying the
+dispatch prompt.
+
 **13. The invariant companion is empty, with the reason recorded.** Stored
 records are already validated by the storage seam on every load and write;
 revision monotonicity is enforced in `update` and covered by tests; the approval
