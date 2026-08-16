@@ -332,6 +332,9 @@ describe('short ids', () => {
         evidence: null,
         dependsOn: [],
         budgetTokens: null,
+        executor: 'any',
+        dueAt: null,
+        notes: '',
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -526,6 +529,9 @@ describe('auto-claim', () => {
       evidence: null,
       dependsOn: [],
       budgetTokens: null,
+      executor: 'any',
+      dueAt: null,
+      notes: '',
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -694,6 +700,9 @@ describe('task spec (v0.5 L2)', () => {
       evidence: null,
       dependsOn: [],
       budgetTokens: null,
+      executor: 'any',
+      dueAt: null,
+      notes: '',
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -885,6 +894,43 @@ describe('experience cards (v0.8 L5)', () => {
       { projectId: PROJECT_ID, title: 'Silent', acceptanceCriteria: ['a'] }, actor)
     await service.update(task.key as string, { status: 'done' }, actor)
     expect(service.relatedExperience()).toHaveLength(0)
+  })
+})
+
+describe('executor, dueAt, notes (v0.9)', () => {
+  it('defaults executor to any and stores explicit values', async () => {
+    const { service, actor } = build('auto')
+    const plain = await service.create(
+      { projectId: PROJECT_ID, title: 'Plain', acceptanceCriteria: ['p'] }, actor)
+    expect(plain.executor).toBe('any')
+    const human = await service.create(
+      { projectId: PROJECT_ID, title: 'For human', acceptanceCriteria: ['h'], executor: 'human' }, actor)
+    expect(human.executor).toBe('human')
+    const agent = await service.update(human.key as string, { executor: 'agent' }, actor)
+    expect(agent.executor).toBe('agent')
+  })
+
+  it('appends notes without overwriting and records a noted activity', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Noted', acceptanceCriteria: ['n'], notes: 'first' }, actor)
+    expect(task.notes).toBe('first')
+
+    const second = await service.update(task.key as string, { note: 'second' }, actor)
+    expect(second.notes).toBe('first\nsecond')
+    expect(service.activityOf(task.id).some(entry => entry.action === 'noted')).toBe(true)
+
+    const third = await service.update(task.key as string, { note: 'third' }, actor)
+    expect(third.notes).toBe('first\nsecond\nthird')
+  })
+
+  it('stores the deadline and clears it with null', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Dated', acceptanceCriteria: ['d'], dueAt: 1_000_000 }, actor)
+    expect(task.dueAt).toBe(1_000_000)
+    const cleared = await service.update(task.key as string, { dueAt: null }, actor)
+    expect(cleared.dueAt).toBeNull()
   })
 })
 

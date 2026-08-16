@@ -28,6 +28,30 @@ starts feeding the next task.
 
 None — additive config only; the digest is opt-in.
 
+## [0.9.0] — 2025-08-17
+
+Executor intent, deadlines, and append-only notes.
+
+### Added
+
+- **`executor`** (`agent` / `human` / `any`, default `any`): `human` tasks are
+  never picked up by auto-claim — the board stops auto-assigning work that
+  needs a person.
+- **`dueAt`** (nullable): a planned-deadline scheduling signal; auto-claim
+  prefers earlier deadlines (after priority, before age); the panel flags
+  overdue tasks. Deliberately not an estimate — no planned-start field.
+- **`notes`** (append-only): `note` on `task_update` appends (never
+  overwrites) and records a `noted` activity entry; cards show the latest
+  notes.
+- Routes and tools expose all three (`executor`, `due_at`, `note`/`notes`).
+- Real E2E (`tests/e2e/executor-gate.mjs`): a `human` task stays unclaimed
+  while an `agent` task is auto-claimed. Route matrix extended to 34 checks,
+  all passing.
+
+### Migration
+
+None — additive fields.
+
 ## [0.7.1] — 2025-08-17
 
 Route/tool exposure fix for v0.7 fields (found by the route verification

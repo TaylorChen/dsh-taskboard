@@ -20,7 +20,7 @@ import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import type {} from './index.ts'
 import type { Actor } from './service.ts'
-import { TASK_PRIORITIES, TASK_STATUSES, type Task } from './domain.ts'
+import { TASK_EXECUTORS, TASK_PRIORITIES, TASK_STATUSES, type Task } from './domain.ts'
 import { DEFAULT_LIST_LIMIT } from './defaults.ts'
 
 /** Cordis plugin name. */
@@ -179,6 +179,13 @@ export function apply(ctx: Context, config: Config): void {
         type: 'integer',
         description: 'Output-token budget for the executing subagent; null clears it',
       },
+      executor: {
+        type: 'string',
+        enum: TASK_EXECUTORS,
+        description: "Intended executor: 'human' tasks are never auto-claimed",
+      },
+      due_at: { type: 'integer', description: 'Planned deadline as epoch milliseconds; omit for none' },
+      notes: { type: 'string', description: 'Initial process notes' },
       status: {
         type: 'string',
         enum: TASK_STATUSES,
@@ -221,6 +228,9 @@ export function apply(ctx: Context, config: Config): void {
           ? {} : { definitionOfDone: args.definition_of_done },
         ...args.depends_on === undefined ? {} : { dependsOn: args.depends_on },
         ...args.budget_tokens === undefined ? {} : { budgetTokens: args.budget_tokens },
+        ...args.executor === undefined ? {} : { executor: args.executor },
+        ...args.due_at === undefined ? {} : { dueAt: args.due_at },
+        ...args.notes === undefined ? {} : { notes: args.notes },
         // v0.4 W1: an unbound task binds to the workspace owning this cwd
         // when the optional workspace seam is available.
         ...exec.agent?.session.header.cwd === undefined
@@ -263,6 +273,13 @@ export function apply(ctx: Context, config: Config): void {
         type: 'integer',
         description: 'Replace the output-token budget; null clears it',
       },
+      executor: {
+        type: 'string',
+        enum: TASK_EXECUTORS,
+        description: "Replace the intended executor: 'human' tasks are never auto-claimed",
+      },
+      due_at: { type: 'integer', description: 'Replace the deadline as epoch milliseconds; null clears it' },
+      note: { type: 'string', description: 'Append one process note (never overwrites)' },
       expected_revision: {
         type: 'integer',
         description: 'Revision the caller last read; a mismatch refuses the write',
@@ -291,6 +308,9 @@ export function apply(ctx: Context, config: Config): void {
         ...Object.keys(specFields).length > 0 ? { spec: specFields } : {},
         ...args.depends_on === undefined ? {} : { dependsOn: args.depends_on },
         ...args.budget_tokens === undefined ? {} : { budgetTokens: args.budget_tokens },
+        ...args.executor === undefined ? {} : { executor: args.executor },
+        ...args.due_at === undefined ? {} : { dueAt: args.due_at },
+        ...args.note === undefined ? {} : { note: args.note },
         ...args.expected_revision === undefined ? {} : { expectedRevision: args.expected_revision },
       }, actorOf(exec))
       return summarize(task)

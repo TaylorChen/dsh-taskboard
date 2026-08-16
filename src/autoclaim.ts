@@ -204,10 +204,12 @@ export function apply(ctx: Context, config: Config): void {
     // v0.4 W1: scope the scan to the session's workspace when resolvable.
     const cwd = agent.session.header?.cwd
     const workspaceId = await ctx.taskboard.workspaceIdOfCwd(cwd)
-    // v0.7 W2: only dependency-ready tasks are candidates.
+    // v0.7 W2: only dependency-ready tasks are candidates; v0.9 W1: `human`
+    // tasks are never auto-claimed.
     const scoped = ctx.taskboard.list({ status: 'open' }).filter(task =>
       (workspaceId === undefined || task.workspaceId === null || task.workspaceId === workspaceId)
-      && ctx.taskboard.isReady(task.id))
+      && ctx.taskboard.isReady(task.id)
+      && task.executor !== 'human')
     const candidate = selectClaimCandidate(scoped)
     if (candidate === undefined) return
 
@@ -410,17 +412,26 @@ async function injectSessionContext(
 }
 
 /**
- * Pick the highest-priority claimable task: `open`, unclaimed, earliest
- * `createdAt` first within each priority band. Pure so the scheduling order is
- * unit-testable; workspace scoping and dependency readiness are filtered by the
- * driver before this.
+ * Pick the highest-priority claimable task: `open`, unclaimed, sorted by
+ * priority weight (urgent→low), then deadline (earlier `dueAt` first, none
+ * last), then age. Pure so the scheduling order is unit-testable; workspace
+ * scoping, dependency readiness, and the `human` executor filter happen in
+ * the driver before this.
  * @param tasks - tasks to scan (any status; the filters are applied here).
  * @returns the claim candidate, or `undefined` when none is claimable.
  */
 export function selectClaimCandidate(tasks: readonly Task[]): Task | undefined {
   return tasks
     .filter(task => task.status === 'open' && task.claimedBySessionId === null)
-    .sort((a, b) => priorityWeight(b) - priorityWeight(a) || a.createdAt - b.createdAt)[0]
+    .sort((a, b) =>
+      priorityWeight(b) - priorityWeight(a)
+      || dueOrder(a) - dueOrder(b)
+      || a.createdAt - b.createdAt)[0]
+}
+
+/** Deadline order: dated tasks before undated, earlier first. */
+function dueOrder(task: Task): number {
+  return task.dueAt == null ? Number.MAX_SAFE_INTEGER : task.dueAt
 }
 
 /** Priority scheduling weight: urgent 4 … low 1 (v0.7 W2). */

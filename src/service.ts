@@ -28,6 +28,7 @@ import {
   EXPORT_SCHEMA,
   DOMAIN_VERSION,
   exportDocumentSchema,
+  type TaskExecutor,
   type Activity,
   type ActivityAction,
   type ActivityId,
@@ -164,6 +165,12 @@ export interface CreateTaskInput {
   readonly dependsOn?: readonly string[]
   /** v0.7: output-token budget for the dispatched subagent; null = unlimited. */
   readonly budgetTokens?: number | null
+  /** v0.9: intended executor; `human` tasks are excluded from auto-claim. */
+  readonly executor?: TaskExecutor
+  /** v0.9: planned deadline (epoch ms); null = none. */
+  readonly dueAt?: number | null
+  /** v0.9: initial process notes. */
+  readonly notes?: string
 }
 
 /** Fields accepted when updating a task; omitted fields keep their value. */
@@ -193,6 +200,15 @@ export interface UpdateTaskInput {
   readonly dependsOn?: readonly string[]
   /** v0.7: replace the output-token budget; null clears it. */
   readonly budgetTokens?: number | null
+  /** v0.9: replace the intended executor. */
+  readonly executor?: TaskExecutor
+  /** v0.9: replace the deadline; null clears it. */
+  readonly dueAt?: number | null
+  /**
+   * v0.9: APPEND one process note (never overwrites). Appending records a
+   * `noted` activity entry.
+   */
+  readonly note?: string
   /**
    * Optimistic-concurrency guard. When present and different from the stored
    * revision the write is refused with `revision-conflict` — reread and retry
@@ -402,6 +418,9 @@ export class TaskboardService {
       evidence: null,
       dependsOn,
       budgetTokens: input.budgetTokens ?? null,
+      executor: input.executor ?? 'any',
+      dueAt: input.dueAt ?? null,
+      notes: input.notes ?? '',
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -459,6 +478,10 @@ export class TaskboardService {
       : resolveDependencies(patch.dependsOn, ref => this.resolve(ref))
     assertAcyclic(current.id, dependsOn, ref => this.resolve(ref))
     const budgetTokens = patch.budgetTokens === undefined ? current.budgetTokens : patch.budgetTokens
+    // v0.9: append, never overwrite — notes are a process log, not a field.
+    const notes = patch.note === undefined
+      ? current.notes
+      : current.notes === '' ? patch.note : `${current.notes}\n${patch.note}`
 
     const next: Task = {
       ...current,
@@ -475,6 +498,9 @@ export class TaskboardService {
       spec,
       dependsOn,
       budgetTokens,
+      executor: patch.executor ?? current.executor,
+      dueAt: patch.dueAt === undefined ? current.dueAt : patch.dueAt,
+      notes,
       revision: current.revision + 1,
       updatedAt: this.now(),
     }
@@ -493,6 +519,18 @@ export class TaskboardService {
       )
     }
     await this.deps.store.putTask(next)
+    // v0.9: an appended note is its own activity entry, not a plain edit.
+    if (patch.note !== undefined) {
+      await this.recordActivity(
+        next.id as TaskId,
+        'noted',
+        null,
+        preview(patch.note),
+        actor,
+        next.updatedAt,
+      )
+      return next
+    }
     const change = activityFor(current, next)
     await this.recordActivity(next.id as TaskId, change.action, change.from, change.to, actor, next.updatedAt)
     return next

@@ -511,3 +511,17 @@ session's workspace) into a new session's first pre-step through
 digest cannot balloon the context. This is the closure of the v0.2 plan's
 "任务板是会话的组织层": the board now seeds a session with what it needs to
 know instead of waiting to be asked.
+
+**36. v0.9: executor intent, deadlines as scheduling signal, and append-only
+notes.** Three additive fields round out the task as a domain object. (1)
+`executor: 'agent' | 'human' | 'any'` is an INTENT declaration, not an ACL —
+its only enforcement is that auto-claim never picks up `human` tasks (the
+state machine says who the ball is with; the executor says who it is FOR).
+(2) `dueAt` is a human's commitment, not an estimate — it feeds the
+scheduling weight (priority, then earlier due first, then age) and the
+panel's overdue hint; it deliberately does NOT reintroduce estimation, and
+`plannedStartAt` stays excluded because agents are not calendar-driven.
+(3) `notes` is append-only process log (`note` patch appends, never
+overwrites, recording a `noted` activity entry) — distinct from `body` (the
+original intent) and the activity stream (structured events). All three are
+`.default()`-compatible additions, so v0.8 records read back unchanged.

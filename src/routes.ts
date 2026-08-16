@@ -29,7 +29,7 @@ import type {} from './index.ts'
 import { TaskboardError } from './errors.ts'
 import {
   TASK_PRIORITIES, TASK_STATUSES,
-  type TaskPriority, type TaskStatus,
+  type TaskExecutor, type TaskPriority, type TaskStatus,
 } from './domain.ts'
 import type { Actor } from './service.ts'
 
@@ -116,6 +116,9 @@ export function apply(ctx: Context): void {
           ? { dependsOn: input.depends_on as string[] } : {},
         ...typeof input.budget_tokens === 'number'
           ? { budgetTokens: input.budget_tokens } : {},
+        ...isExecutor(input.executor) ? { executor: input.executor } : {},
+        ...typeof input.due_at === 'number' ? { dueAt: input.due_at } : {},
+        ...typeof input.notes === 'string' ? { notes: input.notes } : {},
       }, PANEL)
       json(res, 201, task)
     })
@@ -174,6 +177,9 @@ export function apply(ctx: Context): void {
           ? { dependsOn: input.depends_on as string[] } : {},
         ...typeof input.budget_tokens === 'number'
           ? { budgetTokens: input.budget_tokens } : {},
+        ...isExecutor(input.executor) ? { executor: input.executor } : {},
+        ...typeof input.due_at === 'number' ? { dueAt: input.due_at } : {},
+        ...typeof input.note === 'string' ? { note: input.note } : {},
         ...typeof input.expectedRevision === 'number'
           ? { expectedRevision: input.expectedRevision }
           : {},
@@ -254,6 +260,11 @@ function isStatus(value: unknown): value is TaskStatus {
 /** Narrow a wire value to a priority. */
 function isPriority(value: unknown): value is TaskPriority {
   return typeof value === 'string' && (TASK_PRIORITIES as readonly string[]).includes(value)
+}
+
+/** Narrow a wire value to an executor. */
+function isExecutor(value: unknown): value is TaskExecutor {
+  return typeof value === 'string' && ['agent', 'human', 'any'].includes(value)
 }
 
 /** Write one JSON response. */

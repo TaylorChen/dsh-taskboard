@@ -68,6 +68,9 @@ interface BoardTask {
     artifacts: string[]
     summary: string
   } | null
+  executor: 'agent' | 'human' | 'any'
+  dueAt: number | null
+  notes: string
 }
 
 /** One project as the board route serves it. */
@@ -378,10 +381,21 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         {workspaceName(task.workspaceId) !== undefined && (
                           <span>· {workspaceName(task.workspaceId)}</span>
                         )}
+                        <span>· {t(`executor.${task.executor}` as TaskboardKey)}</span>
+                        {task.dueAt !== null && (
+                          <span style={{ color: task.dueAt < Date.now() ? BLOCKED_TINT : undefined }}>
+                            · {task.dueAt < Date.now() ? t('due.overdue') : new Date(task.dueAt).toLocaleDateString()}
+                          </span>
+                        )}
                         <span>· {task.priority}</span>
                         <span>· rev {task.revision}</span>
                         <span>· {t(`origin.${task.origin === 'human' ? 'human' : 'agent'}` as TaskboardKey)}</span>
                       </div>
+                      {task.notes !== '' && (
+                        <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6, lineHeight: 1.35, whiteSpace: 'pre-line' }}>
+                          {t('notes.title')}: {task.notes.length > 160 ? `${task.notes.slice(-160)}…` : task.notes}
+                        </div>
+                      )}
                       {task.blockedReason !== null && (
                         <div style={{ fontSize: 11, color: BLOCKED_TINT, marginBottom: 6, lineHeight: 1.35 }}>
                           {t('blocked.reason')} {task.blockedReason}

@@ -44,6 +44,14 @@ describe('selectClaimCandidate', () => {
     expect(selectClaimCandidate([claimed, inProgress, blocked, open])?.id).toBe('free')
   })
 
+  it('prefers an earlier deadline, then undated tasks last (v0.9)', () => {
+    const undated = task({ id: 'u', title: 'Undated', createdAt: 100 })
+    const later = task({ id: 'l', title: 'Later', createdAt: 200, dueAt: 300 })
+    const sooner = task({ id: 's', title: 'Sooner', createdAt: 300, dueAt: 100 })
+    expect(selectClaimCandidate([undated, later, sooner])?.id).toBe('s')
+    expect(selectClaimCandidate([undated, later])?.id).toBe('l')
+  })
+
   it('returns undefined when nothing is claimable', () => {
     const done = task({ id: 'd', title: 'Done', createdAt: 10, status: 'done' })
     expect(selectClaimCandidate([done])).toBeUndefined()

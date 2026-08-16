@@ -57,6 +57,30 @@ R=$(curl -s -w '\n%{http_code}' -X PATCH $BASE/task/TB-1 -H 'content-type: appli
 CODE=${R##*$'\n'}
 check "PATCH budget null -> 200" 200 "$CODE"
 
+echo '== v0.9 executor / dueAt / notes =='
+# POST with executor/due_at/notes -> 201
+R=$(curl -s -w '\n%{http_code}' -X POST $BASE/task -H 'content-type: application/json' -d '{"title":"R9 human","status":"open","acceptance_criteria":["h"],"executor":"human","due_at":1999999999000,"notes":"initial note"}')
+CODE=${R##*$'\n'}; BODY=${R%$'\n'*}
+check "POST executor+due_at+notes -> 201" 201 "$CODE"
+[ "$(echo "$BODY" | jq_field "['executor']")" = "human" ] && ok "executor stored" || bad "executor" "$(echo "$BODY" | jq_field "['executor']")"
+[ "$(echo "$BODY" | jq_field "['dueAt']")" = "1999999999000" ] && ok "dueAt stored" || bad "dueAt" "$(echo "$BODY" | jq_field "['dueAt']")"
+[ "$(echo "$BODY" | jq_field "['notes']")" = "initial note" ] && ok "notes stored" || bad "notes" "$(echo "$BODY" | jq_field "['notes']")"
+R9_KEY=$(echo "$BODY" | jq_field "['key']")
+# PATCH note append (twice) on the SAME R9 task -> append not overwrite
+R=$(curl -s -w '\n%{http_code}' -X PATCH $BASE/task/$R9_KEY -H 'content-type: application/json' -d '{"note":"second"}')
+CODE=${R##*$'\n'}
+check "PATCH note append -> 200" 200 "$CODE"
+R=$(curl -s -w '\n%{http_code}' -X PATCH $BASE/task/$R9_KEY -H 'content-type: application/json' -d '{"note":"third"}')
+CODE=${R##*$'\n'}; BODY=${R%$'\n'*}
+check "PATCH note append again -> 200" 200 "$CODE"
+printf '%s' "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['notes']=='initial note\nsecond\nthird', repr(d['notes'])" >/dev/null 2>&1 \
+  && ok "notes appended" || bad "notes" "$(echo "$BODY" | jq_field "['notes']")"
+# PATCH executor change -> 200
+R=$(curl -s -w '\n%{http_code}' -X PATCH $BASE/task/$R9_KEY -H 'content-type: application/json' -d '{"executor":"any"}')
+CODE=${R##*$'\n'}; BODY=${R%$'\n'*}
+check "PATCH executor -> 200" 200 "$CODE"
+[ "$(echo "$BODY" | jq_field "['executor']")" = "any" ] && ok "executor changed" || bad "executor" "$(echo "$BODY" | jq_field "['executor']")"
+
 echo '== status migrations & guards =='
 # 8. claim + confirm done + evidence-free OK; stale revision -> 409
 R=$(curl -s -w '\n%{http_code}' -X PATCH $BASE/task/TB-1 -H 'content-type: application/json' -d '{"status":"in_progress","claimed_by_session_id":"route-test"}')

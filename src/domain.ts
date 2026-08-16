@@ -65,6 +65,15 @@ export const TASK_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const
 export type TaskPriority = (typeof TASK_PRIORITIES)[number]
 
 /**
+ * Who a task is intended for (v0.9): an intent declaration, not an ACL.
+ * `human` tasks are never picked up by auto-claim (the human is the only
+ * intended executor); `agent` tasks are; `any` (default) is whoever is ready.
+ */
+export const TASK_EXECUTORS = ['agent', 'human', 'any'] as const
+/** One task's intended executor. */
+export type TaskExecutor = (typeof TASK_EXECUTORS)[number]
+
+/**
  * A task's executable specification (ROADMAP L2, v0.5): the intent, made
  * self-contained enough for an agent that shares no human team memory.
  * `acceptanceCriteria` are the checkable success conditions (the hard gate for
@@ -142,6 +151,24 @@ export const taskSchema = z.object({
    */
   budgetTokens: z.number().int().nonnegative().nullable().default(null),
   /**
+   * Intended executor (v0.9 W1): `human` tasks are excluded from auto-claim.
+   * Additive with `.default('any')`.
+   */
+  executor: z.enum(TASK_EXECUTORS).default('any'),
+  /**
+   * Planned deadline (v0.9 W2): a human's commitment, not an estimate. Feeds
+   * the scheduling weight (earlier due first) and the panel's overdue hint.
+   * `null` = no deadline. Additive.
+   */
+  dueAt: z.number().int().nonnegative().nullable().default(null),
+  /**
+   * Append-only process notes (v0.9 W3): observations made while executing —
+   * an agent's mid-way finding, a human's clarification. Distinct from `body`
+   * (the original intent) and the activity stream (structured events).
+   * Additive with `.default('')`.
+   */
+  notes: z.string().max(100_000).default(''),
+  /**
    * Who created this task. Added after v1 shipped, so it carries a `default`
    * rather than bumping `DOMAIN_VERSION`: a stored record written before the
    * field existed still parses, and reads back as `agent`. Adding an optional
@@ -196,7 +223,7 @@ export type Project = z.infer<typeof projectSchema>
  * values, which remain legal.
  */
 export const ACTIVITY_ACTIONS = [
-  'created', 'status', 'edited', 'removed', 'blocked', 'claimed', 'dispatched', 'completed',
+  'created', 'status', 'edited', 'removed', 'blocked', 'claimed', 'dispatched', 'completed', 'noted',
 ] as const
 /** One activity action. */
 export type ActivityAction = (typeof ACTIVITY_ACTIONS)[number]

@@ -167,6 +167,18 @@ them:
 The history of the board is deliberately live: a done task's evidence is the
 next task's context.
 
+## Executor, deadlines, and notes (v0.9)
+
+- **`executor`**: mark a task `human` (needs a person — decisions, reviews),
+  `agent`, or `any` (default). **`human` tasks are never auto-claimed** — they
+  stay in 等待认领 for a person to pick up.
+- **`due_at`**: a planned deadline (epoch ms). Auto-claim prefers earlier
+  deadlines; the panel flags overdue tasks. It is a commitment signal, not an
+  estimate — no scheduling math.
+- **`note` / `notes`**: append process notes (`note` on `task_update` appends,
+  never overwrites, and records a `noted` activity entry). The card shows the
+  latest notes.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
