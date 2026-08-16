@@ -112,6 +112,10 @@ export function apply(ctx: Context): void {
           ? { contextRefs: input.context_refs as string[] } : {},
         ...typeof input.definition_of_done === 'string'
           ? { definitionOfDone: input.definition_of_done } : {},
+        ...Array.isArray(input.depends_on)
+          ? { dependsOn: input.depends_on as string[] } : {},
+        ...typeof input.budget_tokens === 'number'
+          ? { budgetTokens: input.budget_tokens } : {},
       }, PANEL)
       json(res, 201, task)
     })
@@ -166,6 +170,10 @@ export function apply(ctx: Context): void {
         ...typeof input.body === 'string' ? { body: input.body } : {},
         ...typeof input.blockedReason === 'string' ? { blockedReason: input.blockedReason } : {},
         ...Object.keys(spec).length > 0 ? { spec } : {},
+        ...Array.isArray(input.depends_on)
+          ? { dependsOn: input.depends_on as string[] } : {},
+        ...typeof input.budget_tokens === 'number'
+          ? { budgetTokens: input.budget_tokens } : {},
         ...typeof input.expectedRevision === 'number'
           ? { expectedRevision: input.expectedRevision }
           : {},

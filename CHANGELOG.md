@@ -28,6 +28,22 @@ starts feeding the next task.
 
 None — additive config only; the digest is opt-in.
 
+## [0.7.1] — 2025-08-17
+
+Route/tool exposure fix for v0.7 fields (found by the route verification
+matrix).
+
+### Fixed
+
+- `depends_on` / `budget_tokens` were implemented in the service but never
+  exposed: `POST|PATCH /api/taskboard/task` ignored them, and the
+  `task_create` / `task_update` tools had no parameters. Both surfaces now
+  pass them through; the cycle rejection (`PATCH depends_on` with a
+  self-reference -> 400) is reachable over HTTP.
+- Added `tests/e2e/route-matrix.sh`: a 25-check curl matrix over a clean web
+  instance covering the v0.5–v0.8 fields, migrations, guards, reads, and the
+  CSRF 415 — all passing.
+
 ## [0.7.0] — 2025-08-17
 
 Dependencies and scheduling (ROADMAP L4): auto-claim stops picking the oldest

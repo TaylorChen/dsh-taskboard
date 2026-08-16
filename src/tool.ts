@@ -170,6 +170,15 @@ export function apply(ctx: Context, config: Config): void {
         description: 'Files, commits, or issues the executor should read (e.g. src/foo.ts, #42)',
       },
       definition_of_done: { type: 'string', description: 'Optional closing conditions text' },
+      depends_on: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Prerequisite task ids or keys; claimable only when every one is done or cancelled',
+      },
+      budget_tokens: {
+        type: 'integer',
+        description: 'Output-token budget for the executing subagent; null clears it',
+      },
       status: {
         type: 'string',
         enum: TASK_STATUSES,
@@ -210,6 +219,8 @@ export function apply(ctx: Context, config: Config): void {
         ...args.context_refs === undefined ? {} : { contextRefs: args.context_refs },
         ...args.definition_of_done === undefined
           ? {} : { definitionOfDone: args.definition_of_done },
+        ...args.depends_on === undefined ? {} : { dependsOn: args.depends_on },
+        ...args.budget_tokens === undefined ? {} : { budgetTokens: args.budget_tokens },
         // v0.4 W1: an unbound task binds to the workspace owning this cwd
         // when the optional workspace seam is available.
         ...exec.agent?.session.header.cwd === undefined
@@ -243,6 +254,15 @@ export function apply(ctx: Context, config: Config): void {
         description: 'Files, commits, or issues the executor should read',
       },
       definition_of_done: { type: 'string', description: 'Optional closing conditions text' },
+      depends_on: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Replace the prerequisite task ids or keys (cycle-checked)',
+      },
+      budget_tokens: {
+        type: 'integer',
+        description: 'Replace the output-token budget; null clears it',
+      },
       expected_revision: {
         type: 'integer',
         description: 'Revision the caller last read; a mismatch refuses the write',
@@ -269,6 +289,8 @@ export function apply(ctx: Context, config: Config): void {
         ...args.title === undefined ? {} : { title: args.title },
         ...args.body === undefined ? {} : { body: args.body },
         ...Object.keys(specFields).length > 0 ? { spec: specFields } : {},
+        ...args.depends_on === undefined ? {} : { dependsOn: args.depends_on },
+        ...args.budget_tokens === undefined ? {} : { budgetTokens: args.budget_tokens },
         ...args.expected_revision === undefined ? {} : { expectedRevision: args.expected_revision },
       }, actorOf(exec))
       return summarize(task)
