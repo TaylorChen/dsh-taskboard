@@ -145,6 +145,12 @@ export interface CreateTaskInput {
   readonly priority?: TaskPriority
   readonly labels?: readonly string[]
   readonly workspaceId?: string | null
+  /**
+   * The creating session's absolute cwd, when known. When `workspaceId` is
+   * omitted and the workspace seam is available, an unbound task is bound to
+   * the workspace owning this cwd (v0.4 W1 auto-assignment).
+   */
+  readonly sessionCwd?: string
   readonly blockedReason?: string | null
 }
 
@@ -157,6 +163,12 @@ export interface UpdateTaskInput {
   readonly labels?: readonly string[]
   readonly workspaceId?: string | null
   readonly claimedBySessionId?: string | null
+  /**
+   * The acting session's absolute cwd, when known. When `workspaceId` is
+   * omitted and the task is unbound, the workspace seam binds it to the
+   * workspace owning this cwd (v0.4 W1 auto-assignment, e.g. on claim).
+   */
+  readonly sessionCwd?: string
   /** Why the task is (or is being moved to) `blocked`; cleared on leaving. */
   readonly blockedReason?: string | null
   /**
@@ -207,6 +219,12 @@ export class TaskboardService {
    * unclaimed task before either's `putTask` lands, and both would claim it.
    */
   private claimChain: Promise<Task | null> = Promise.resolve(null)
+  /**
+   * The workspace seam resolver, injected by `apply()` when `ctx.workspaceRegistry`
+   * is mounted (web profile only — see ARCHITECTURE decision 28). Absent in
+   * headless: auto-assignment and scoping fall back to board-global.
+   */
+  private workspaceResolver: ((cwd: string | undefined) => Promise<string | undefined>) | undefined
 
   /**
    * @param deps - provider, approval seam, and validated deployment config.
@@ -214,6 +232,25 @@ export class TaskboardService {
   constructor(private readonly deps: TaskboardDeps) {
     this.now = deps.now ?? (() => Date.now())
     this.newId = deps.newId ?? (() => globalThis.crypto.randomUUID())
+  }
+
+  /**
+   * Inject the workspace resolver (optional seam; call from `apply()` inside
+   * `ctx.inject(['workspaceRegistry'], …)` so headless boots stay unaffected).
+   * @param resolver - resolves a session cwd to its owning workspace id.
+   */
+  setWorkspaceResolver(resolver: (cwd: string | undefined) => Promise<string | undefined>): void {
+    this.workspaceResolver = resolver
+  }
+
+  /**
+   * Resolve a session cwd to a workspace id through the injected seam.
+   * @param cwd - the session's absolute working directory, if any.
+   * @returns the owning workspace id, or `undefined` when the seam is absent
+   * or the cwd is unowned.
+   */
+  async workspaceIdOfCwd(cwd: string | undefined): Promise<string | undefined> {
+    return this.workspaceResolver?.(cwd)
   }
 
   /**
@@ -317,7 +354,7 @@ export class TaskboardService {
       status,
       priority: input.priority ?? 'normal',
       labels: [...(input.labels ?? [])],
-      workspaceId: input.workspaceId ?? null,
+      workspaceId: await this.resolveWorkspaceId(input.workspaceId, input.sessionCwd),
       claimedBySessionId: null,
       origin: actor.kind,
       blockedReason: input.blockedReason ?? null,
@@ -353,6 +390,13 @@ export class TaskboardService {
       ? null
       : patch.blockedReason === undefined ? current.blockedReason : patch.blockedReason
     assertBlockedInvariant(status, blockedReason)
+    // An explicit workspaceId wins; an unbound task binds to the acting
+    // session's workspace when the seam can resolve it (v0.4 W1).
+    const workspaceId = patch.workspaceId !== undefined
+      ? patch.workspaceId
+      : current.workspaceId !== null
+        ? current.workspaceId
+        : await this.resolveWorkspaceId(undefined, patch.sessionCwd)
 
     const next: Task = {
       ...current,
@@ -361,7 +405,7 @@ export class TaskboardService {
       status,
       priority: patch.priority ?? current.priority,
       labels: patch.labels === undefined ? current.labels : [...patch.labels],
-      workspaceId: patch.workspaceId === undefined ? current.workspaceId : patch.workspaceId,
+      workspaceId,
       claimedBySessionId: patch.claimedBySessionId === undefined
         ? current.claimedBySessionId
         : patch.claimedBySessionId,
@@ -416,10 +460,12 @@ export class TaskboardService {
    * read sees the winner's committed write and returns `null`.
    * @param ref - short key or full id.
    * @param sessionId - the claiming session.
+   * @param sessionCwd - the claiming session's cwd, when known; an unbound
+   * task is bound to the workspace owning it (v0.4 W1).
    * @returns the claimed task, or `null` when the task is not claimable
    * (missing, not `open`, or already claimed).
    */
-  async autoClaim(ref: TaskRef, sessionId: string): Promise<Task | null> {
+  async autoClaim(ref: TaskRef, sessionId: string, sessionCwd?: string): Promise<Task | null> {
     const claimed = this.claimChain.then(async () => {
       if (this.deps.writePolicy === 'off') {
         throw new TaskboardError('write-denied', "writePolicy is 'off': auto-claim refused")
@@ -433,6 +479,7 @@ export class TaskboardService {
         ...current,
         status: 'in_progress',
         claimedBySessionId: sessionId,
+        workspaceId: current.workspaceId ?? await this.resolveWorkspaceId(undefined, sessionCwd),
         revision: current.revision + 1,
         updatedAt: at,
       }
@@ -451,6 +498,81 @@ export class TaskboardService {
     // wedge every later auto-claim.
     this.claimChain = claimed.then(() => null, () => null)
     return claimed
+  }
+
+  /**
+   * Record that a claimed task has been handed to a background subagent
+   * (v0.4 W2). A system automation write like `autoClaim`: the task stays
+   * `in_progress`; the activity entry names the subagent's session. Refuses
+   * (returns `null`) when the task is no longer claimed by the given session —
+   * a human may have taken it over meanwhile.
+   * @param ref - short key or full id.
+   * @param sessionId - the claiming session.
+   * @param subagentId - the background subagent's session id.
+   * @returns the task, or `null` when the dispatch does not apply.
+   */
+  async recordDispatched(ref: TaskRef, sessionId: string, subagentId: string): Promise<Task | null> {
+    const recorded = this.claimChain.then(async () => {
+      const current = this.resolve(ref)
+      if (current === undefined) return null
+      if (current.status !== 'in_progress' || current.claimedBySessionId !== sessionId) return null
+      await this.recordActivityLabeled(
+        current.id as TaskId,
+        'dispatched',
+        null,
+        subagentId,
+        { actor: 'agent', actorLabel: sessionId },
+        this.now(),
+      )
+      return current
+    })
+    this.claimChain = recorded.then(() => null, () => null)
+    return recorded
+  }
+
+  /**
+   * Write back a dispatched task's outcome once the background subagent
+   * settles (v0.4 W2). A system automation write like `autoClaim`: `completed`
+   * moves the task to `awaiting_human` (the ball is back with the human to
+   * confirm), `error` moves it to `blocked` with the reason. The write only
+   * applies while the task is still `in_progress` and claimed by the given
+   * session — a human who moved it meanwhile is never overwritten.
+   * @param ref - short key or full id.
+   * @param sessionId - the claiming session.
+   * @param outcome - the subagent's terminal outcome.
+   * @returns the settled task, or `null` when the write does not apply.
+   */
+  async settleDispatch(
+    ref: TaskRef,
+    sessionId: string,
+    outcome: { kind: 'completed' } | { kind: 'error', reason: string },
+  ): Promise<Task | null> {
+    const settled = this.claimChain.then(async () => {
+      const current = this.resolve(ref)
+      if (current === undefined) return null
+      if (current.status !== 'in_progress' || current.claimedBySessionId !== sessionId) return null
+
+      const at = this.now()
+      const next: Task = {
+        ...current,
+        status: outcome.kind === 'completed' ? 'awaiting_human' : 'blocked',
+        blockedReason: outcome.kind === 'error' ? outcome.reason : null,
+        revision: current.revision + 1,
+        updatedAt: at,
+      }
+      await this.deps.store.putTask(next)
+      await this.recordActivityLabeled(
+        current.id as TaskId,
+        'completed',
+        current.status,
+        next.status,
+        { actor: 'agent', actorLabel: sessionId },
+        at,
+      )
+      return next
+    })
+    this.claimChain = settled.then(() => null, () => null)
+    return settled
   }
 
   /**
@@ -662,6 +784,20 @@ export class TaskboardService {
     for (const entry of entries.slice(0, excess)) {
       await this.deps.store.deleteActivity(entry.id as ActivityId)
     }
+  }
+
+  /**
+   * Resolve a task's workspace: an explicit value wins; otherwise an unbound
+   * task is bound to the workspace owning the acting session's cwd when the
+   * optional seam is available; otherwise it stays board-global (`null`).
+   */
+  private async resolveWorkspaceId(
+    explicit: string | null | undefined,
+    sessionCwd: string | undefined,
+  ): Promise<string | null> {
+    if (explicit !== undefined) return explicit
+    if (sessionCwd === undefined || this.workspaceResolver === undefined) return null
+    return (await this.workspaceResolver(sessionCwd)) ?? null
   }
 
   /** Read one task by reference or raise `not-found`. */

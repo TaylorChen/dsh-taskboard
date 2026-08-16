@@ -320,6 +320,36 @@ failure — `stopReason: 'error'` instead), and `ctx.subagents` ships in
 `dsh-base` so web and headless both have it. `ctx.jobs` remains the
 observability layer only; the core completion signal is `run.result`.
 
+**30. v0.4 W1: workspace binding is a cwd-equality resolution with a defined
+no-seam fallback.** The board consumes `ctx.workspaceRegistry` only through a
+minimal structural face (`src/workspace.ts` — same seam-isolation shape as
+`TaskboardStore`): a session's `header.cwd` resolves to the workspace whose
+canonical `path` owns it. Three binding points: `create` and `task_claim`
+(tool-side, passing `sessionCwd`), and `autoClaim` (driver-side, passing the
+session cwd); an explicitly supplied `workspaceId` always wins and a bound task
+is never rebound. Scoping: the auto-claim scan includes only tasks of the
+session's workspace plus unbound board-global tasks — a foreign-workspace task
+is never claimable from another workspace's session. Because the registry is
+web-only (decision 28), every behavior has a defined absence mode: no
+auto-assign, whole-board scan, and the panel shows no workspace name — the
+pre-v0.4 behaviour, verified by the headless regression run.
+
+**31. v0.4 W2: claiming can hand the task to a background subagent, and the
+outcome settles the task.** When the auto-claim driver's subagent seam is
+available, a claimed task is dispatched via `ctx.subagents.start()` with a
+prompt naming the task and telling the child NOT to touch the board — the
+parent owns the write-back. `recordDispatched` marks the dispatch in the
+activity stream (naming the child session), and `run.result` drives
+`settleDispatch`: `completed` → `awaiting_human` (the ball is back with the
+human to confirm), `error` → `blocked` + reason. Both are automation writes in
+the same standing as `autoClaim` (decision 25 — the row is the opt-in), and
+both refuse when the task is no longer `in_progress` under the same claiming
+session, so a human who moved the task meanwhile is never overwritten; the
+`in_progress` state itself is the double-dispatch guard (a dispatched task is
+not `open`, so nothing can claim it again). When the subagent seam is absent,
+the driver falls back to the v0.3 follow-up turn in the claiming session —
+defensive, since `dsh-base` ships the seam everywhere.
+
 **13. The invariant companion is empty, with the reason recorded.** Stored
 records are already validated by the storage seam on every load and write;
 revision monotonicity is enforced in `update` and covered by tests; the approval
@@ -401,11 +431,12 @@ scrolls.
 
 ## Not yet built
 
-- **Workspace binding.** `Task.workspaceId` is stored and filterable, but nothing
-  yet resolves it against `ctx.workspaceRegistry` or auto-assigns from a session's
-  cwd. Auto-claim consequently does not scope its scan to the session's
-  workspace — an open task from any workspace is claimable. When workspace
-  binding lands, the scan should filter first.
-- **Subagent claim-and-execute.** `task_claim` records the claiming session;
-  handing a claimed task to a background subagent through `ctx.subagents` +
-  `ctx.jobs` is the next capability, not a v0.3 promise.
+- **Subagent cancellation wiring.** A dispatched subagent runs to completion;
+  the driver does not yet cancel it when the task changes or the deployment
+  shuts down (`run.dispose` is available but unwired).
+- **Jobs-surface execution indicator.** `ctx.jobs` (dsh-jobs) can expose
+  in-flight dispatches to the panel ("running in subagent…"); v0.4 deliberately
+  kept the observability layer out of scope.
+- **Subagent-produced subtasks.** W2 lands plain execution; turning a
+  subagent's output into child tasks is a later evaluation, once real execution
+  patterns are visible.

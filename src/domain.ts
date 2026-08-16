@@ -129,8 +129,16 @@ export const projectSchema = z.object({
 /** One persisted project. */
 export type Project = z.infer<typeof projectSchema>
 
-/** Activity actions; `blocked` and `claimed` are the statuses they imply. */
-export const ACTIVITY_ACTIONS = ['created', 'status', 'edited', 'removed', 'blocked', 'claimed'] as const
+/**
+ * Activity actions; `blocked` and `claimed` are the statuses they imply.
+ * v0.4 adds `dispatched` (a claimed task handed to a background subagent) and
+ * `completed` (the subagent's outcome written back). Adding enum values is
+ * backwards-compatible at the durable boundary — stored records keep their old
+ * values, which remain legal.
+ */
+export const ACTIVITY_ACTIONS = [
+  'created', 'status', 'edited', 'removed', 'blocked', 'claimed', 'dispatched', 'completed',
+] as const
 /** One activity action. */
 export type ActivityAction = (typeof ACTIVITY_ACTIONS)[number]
 

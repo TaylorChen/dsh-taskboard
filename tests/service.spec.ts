@@ -519,6 +519,116 @@ describe('auto-claim', () => {
   })
 })
 
+describe('workspace binding (v0.4 W1)', () => {
+  it('binds a created task to the workspace owning the session cwd', async () => {
+    const { service, actor } = build('auto')
+    service.setWorkspaceResolver(async (cwd) => (cwd === '/home/work' ? 'ws-a' : undefined))
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Bound', sessionCwd: '/home/work' }, actor)
+    expect(task.workspaceId).toBe('ws-a')
+  })
+
+  it('keeps an unowned or absent cwd board-global', async () => {
+    const { service, actor } = build('auto')
+    service.setWorkspaceResolver(async () => undefined)
+    const unowned = await service.create(
+      { projectId: PROJECT_ID, title: 'Unowned', sessionCwd: '/elsewhere' }, actor)
+    expect(unowned.workspaceId).toBeNull()
+  })
+
+  it('does not bind without the workspace seam', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'No seam', sessionCwd: '/home/work' }, actor)
+    expect(task.workspaceId).toBeNull()
+  })
+
+  it('binds an unbound task on claim (update with sessionCwd)', async () => {
+    const { service, actor } = build('auto')
+    service.setWorkspaceResolver(async (cwd) => (cwd === '/home/work' ? 'ws-a' : undefined))
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Claim me' }, actor)
+    expect(task.workspaceId).toBeNull()
+
+    const claimed = await service.update(task.key as string, {
+      status: 'in_progress',
+      claimedBySessionId: 'session-1',
+      sessionCwd: '/home/work',
+    }, actor)
+    expect(claimed.workspaceId).toBe('ws-a')
+    // An already-bound task is never rebound.
+    const again = await service.update(task.key as string, { title: 'X', sessionCwd: '/other' }, actor)
+    expect(again.workspaceId).toBe('ws-a')
+  })
+
+  it('binds an unbound task on auto-claim', async () => {
+    const { service, actor } = build('auto')
+    service.setWorkspaceResolver(async (cwd) => (cwd === '/home/work' ? 'ws-a' : undefined))
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Auto' }, actor)
+    const claimed = await service.autoClaim(task.key as string, 'session-a', '/home/work')
+    expect(claimed?.workspaceId).toBe('ws-a')
+  })
+
+  it('exposes the cwd -> workspace resolution to the driver', async () => {
+    const { service } = build('auto')
+    service.setWorkspaceResolver(async (cwd) => (cwd === '/w' ? 'ws-1' : undefined))
+    await expect(service.workspaceIdOfCwd('/w')).resolves.toBe('ws-1')
+    await expect(service.workspaceIdOfCwd(undefined)).resolves.toBeUndefined()
+    await expect(service.workspaceIdOfCwd('/nowhere')).resolves.toBeUndefined()
+  })
+})
+
+describe('subagent dispatch (v0.4 W2)', () => {
+  it('records a dispatch and settles completed to awaiting_human', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Shipped' }, actor)
+    await service.autoClaim(task.key as string, 'session-a')
+
+    const dispatched = await service.recordDispatched(task.key as string, 'session-a', 'sub-1')
+    expect(dispatched?.status).toBe('in_progress')
+    expect(service.activityOf(task.id).some(entry => entry.action === 'dispatched')).toBe(true)
+
+    const settled = await service.settleDispatch(task.key as string, 'session-a', { kind: 'completed' })
+    expect(settled?.status).toBe('awaiting_human')
+    expect(settled?.blockedReason).toBeNull()
+    expect(service.activityOf(task.id).some(entry => entry.action === 'completed')).toBe(true)
+  })
+
+  it('settles an error to blocked with the reason', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Failed' }, actor)
+    await service.autoClaim(task.key as string, 'session-a')
+
+    const settled = await service.settleDispatch(task.key as string, 'session-a', {
+      kind: 'error',
+      reason: 'subagent exploded',
+    })
+    expect(settled?.status).toBe('blocked')
+    expect(settled?.blockedReason).toBe('subagent exploded')
+  })
+
+  it('refuses to settle a task the human moved meanwhile', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Touched' }, actor)
+    await service.autoClaim(task.key as string, 'session-a')
+    await service.update(task.key as string, { status: 'done' }, actor)
+
+    await expect(service.settleDispatch(task.key as string, 'session-a', { kind: 'completed' }))
+      .resolves.toBeNull()
+    expect(service.get(task.key as string)?.status).toBe('done')
+  })
+
+  it('refuses a dispatch or settle from a different session', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Mine' }, actor)
+    await service.autoClaim(task.key as string, 'session-a')
+
+    await expect(service.recordDispatched(task.key as string, 'session-b', 'sub-9')).resolves.toBeNull()
+    await expect(service.settleDispatch(task.key as string, 'session-b', { kind: 'completed' }))
+      .resolves.toBeNull()
+    expect(service.get(task.key as string)?.status).toBe('in_progress')
+  })
+})
+
 describe('export and import', () => {
   it('round-trips a board and keys keyless imported tasks', async () => {
     const source = build('auto')

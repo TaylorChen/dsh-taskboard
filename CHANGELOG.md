@@ -4,6 +4,34 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [0.4.0] — 2025-08-16
+
+Workspace binding and subagent execution: the board's "organizing layer"
+semantics close the two gaps left by v0.3.
+
+### Added
+
+- **Workspace binding (W1).** `create`, `task_claim` and auto-claim bind an
+  unbound task to the workspace owning the session's cwd, when the optional
+  `ctx.workspaceRegistry` seam is mounted (web profile); an explicit
+  `workspaceId` wins, a bound task is never rebound, and headless deployments
+  (no seam) keep the pre-v0.4 board-global behaviour. Auto-claim scopes its
+  scan to the session's workspace plus unbound tasks. The panel shows the
+  workspace name on bound cards; `/board` serves the workspace list.
+- **Subagent execution (W2).** A claimed task is dispatched to a background
+  subagent (independent child session) whose prompt names the task and tells
+  it not to touch the board; `run.result` settles the task — `completed` →
+  `awaiting_human`, `error` → `blocked` + reason. Activity stream gains
+  `dispatched` / `completed` entries. A human-moved task is never overwritten;
+  the `in_progress` state is the double-dispatch guard. Falls back to the
+  v0.3 follow-up turn when the subagent seam is unavailable.
+
+### Migration
+
+None — additive: no schema change (the activity action enum gained two values,
+which is backwards-compatible), no status change. The auto-claim row still
+ships disabled.
+
 ## [0.3.0] — 2025-08-16
 
 The board can hand work to an idle agent by itself, bound to token quota.

@@ -24,6 +24,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from './index.ts'
 import { TaskboardError } from './errors.ts'
 import {
@@ -35,8 +36,12 @@ import type { Actor } from './service.ts'
 /** Cordis plugin name. */
 export const name = 'taskboard-routes'
 
-/** Services required before the routes can mount. */
-export const inject = ['webServer', 'taskboard']
+/**
+ * Services required before the routes can mount. `workspaceRegistry` is a
+ * web-only seam and this row is web-only (its headless sibling is disabled),
+ * so a direct inject is safe here — unlike the always-active rows.
+ */
+export const inject = ['webServer', 'taskboard', 'workspaceRegistry']
 
 /** Route prefix owned by this package. */
 const BASE = '/api/taskboard'
@@ -68,6 +73,12 @@ export function apply(ctx: Context): void {
     return json(res, 200, {
       projects: ctx.taskboard.projects(),
       tasks: ctx.taskboard.list(status === undefined ? {} : { status }),
+      // v0.4 W1: workspace id -> display title, so the panel can name a
+      // task's workspace without knowing the registry itself.
+      workspaces: ctx.workspaceRegistry.list().map(workspace => ({
+        id: workspace.id,
+        name: workspace.title,
+      })),
     })
   })
 

@@ -59,6 +59,7 @@ interface BoardTask {
   origin: string
   revision: number
   updatedAt: number
+  workspaceId: string | null
   blockedReason: string | null
   claimedBySessionId: string | null
 }
@@ -69,10 +70,17 @@ interface BoardProject {
   name: string
 }
 
+/** One workspace as the board route serves it (v0.4 W1). */
+interface BoardWorkspace {
+  id: string
+  name: string
+}
+
 /** The board route's payload. */
 interface BoardPayload {
   projects: BoardProject[]
   tasks: BoardTask[]
+  workspaces: BoardWorkspace[]
 }
 
 /** One activity entry as the activity route serves it. */
@@ -221,6 +229,11 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const projectName = (id: string): string =>
     board?.projects.find(project => project.id === id)?.name ?? id
 
+  const workspaceName = (id: string | null): string | undefined =>
+    id === null
+      ? undefined
+      : board?.workspaces.find(workspace => workspace.id === id)?.name
+
   const sessionShort = (id: string): string => id.length > 12 ? `${id.slice(0, 12)}…` : id
 
   /** Render one activity entry in the drawer, newest first. */
@@ -356,6 +369,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
                         <span>{task.key ?? task.id.slice(0, 8)}</span>
                         <span>· {projectName(task.projectId)}</span>
+                        {workspaceName(task.workspaceId) !== undefined && (
+                          <span>· {workspaceName(task.workspaceId)}</span>
+                        )}
                         <span>· {task.priority}</span>
                         <span>· rev {task.revision}</span>
                         <span>· {t(`origin.${task.origin === 'human' ? 'human' : 'agent'}` as TaskboardKey)}</span>

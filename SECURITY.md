@@ -68,14 +68,23 @@ session log only.
 
 **Auto-claim is an opt-in automation, and its dispatch message is
 model-visible.** The `taskboard-autoclaim` row ships disabled; a deployment
-that enables it lets an idle agent claim the oldest `open` task without asking.
-The claim write is a system automation and bypasses the approval gate (the
-agent's subsequent work is still gated normally). The follow-up turn the driver
-sends quotes the claimed task's title and up to 2000 characters of its body
-into the model context — so a task an agent might auto-claim should be treated
-as model-visible text, exactly like anything `task_list` returns. The claim is
-quota-gated (`contextWindow − totalTokens ≥ minRemainingTokens`), so the
-automation cannot pull work into an overflowing context.
+that enables it lets an idle agent claim the oldest claimable `open` task
+without asking. The claim write is a system automation and bypasses the
+approval gate (the agent's subsequent work is still gated normally). Since
+v0.4 the claimed task is handed to a **background subagent** whose prompt
+quotes the task's title and up to 2000 characters of its body — that text
+enters the child session's model context, so a task an agent might auto-claim
+should be treated as model-visible, exactly like anything `task_list` returns.
+The claim is quota-gated (`contextWindow − totalTokens ≥ minRemainingTokens`),
+so the automation cannot pull work into an overflowing context.
+
+**Dispatch and settlement are automation writes.** `recordDispatched` and
+`settleDispatch` (v0.4 W2) write the activity stream and move the task
+(`completed` → `awaiting_human`, `error` → `blocked` + reason) without an
+approval prompt, in the same standing as the claim itself — the row is the
+opt-in. Both refuse to touch a task a human moved meanwhile, so a manual edit
+is never clobbered by a settling subagent. The subagent's prompt explicitly
+instructs the child not to modify the board; only the parent settles it.
 
 **Approval payloads quote the change.** So a human approves a concrete
 before/after rather than an abstract verb, an approval prompt contains the task

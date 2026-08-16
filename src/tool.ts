@@ -174,6 +174,11 @@ export function apply(ctx: Context, config: Config): void {
         ...args.body === undefined ? {} : { body: args.body },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.priority === undefined ? {} : { priority: args.priority },
+        // v0.4 W1: an unbound task binds to the workspace owning this cwd
+        // when the optional workspace seam is available.
+        ...exec.agent?.session.header.cwd === undefined
+          ? {}
+          : { sessionCwd: exec.agent.session.header.cwd },
       }, actorOf(exec))
       return summarize(task)
     },
@@ -230,6 +235,10 @@ export function apply(ctx: Context, config: Config): void {
       const task = await ctx.taskboard.update(args.id, {
         status: 'in_progress',
         claimedBySessionId: exec.agent?.session.id ?? null,
+        // v0.4 W1: an unbound task binds to the workspace owning this cwd.
+        ...exec.agent?.session.header.cwd === undefined
+          ? {}
+          : { sessionCwd: exec.agent.session.header.cwd },
       }, actorOf(exec))
       return summarize(task)
     },

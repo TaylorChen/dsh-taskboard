@@ -138,4 +138,17 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 
   ctx.provide('taskboard', service)
   registerCommands(ctx, service, config.listLimit)
+
+  // Optional workspace seam (v0.4 W1): `workspaceRegistry` is mounted by the
+  // web profile only — headless never mounts it, so this must ride the
+  // optional `ctx.inject` pattern instead of the row's `inject` list
+  // (ARCHITECTURE decision 28). When absent, workspace auto-assignment and
+  // scoping fall back to board-global, which is the pre-v0.4 behaviour.
+  ctx.inject(['workspaceRegistry'], (scoped: Context) => {
+    service.setWorkspaceResolver(async (cwd) => {
+      if (cwd === undefined) return undefined
+      const workspace = await scoped.workspaceRegistry.resolveByPath(cwd)
+      return workspace?.id
+    })
+  })
 }

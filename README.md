@@ -138,8 +138,31 @@ in your overlay:
 Two notes. The claim itself is a system write and skips the approval prompt
 (it is the deployment's configured automation, not the model asking) —
 everything the agent does *after* the claim still passes the normal gate.
-And auto-claim does not yet scope to the session's workspace: any `open` task
-is claimable until workspace binding lands.
+
+Since v0.4 the driver also **scopes to workspaces** and **hands the task to a
+background subagent**:
+
+- **Workspace scoping.** When the session's working directory belongs to a
+  registered workspace, only tasks of that workspace (plus unbound
+  board-global tasks) are claimable — an idle session never picks up another
+  workspace's work. Without a resolvable workspace the scan stays whole-board.
+- **Subagent execution.** A claimed task is dispatched to a background
+  subagent (an independent child session) that runs it and reports back; the
+  task then moves to **等你确认 (`awaiting_human`)** on success, or **遇到阻碍
+  (`blocked`)** with the reason on failure. The claiming session only claims
+  and monitors — it is free to keep working. If the subagent seam is
+  unavailable the driver falls back to handing the task to the claiming
+  session directly.
+
+## Workspaces
+
+Tasks can be bound to a workspace (a project directory). Binding is automatic
+from v0.4: a task created or claimed by a session is bound to the workspace
+owning that session's working directory, when one is registered; an explicit
+workspace always wins and a bound task is never rebound. The panel shows the
+workspace name on bound cards. Unbound tasks are board-global and claimable
+from any workspace. (Workspace *management* — creating, renaming, reordering —
+is the host's own workspace UI, not this plugin's.)
 
 ## Commands
 

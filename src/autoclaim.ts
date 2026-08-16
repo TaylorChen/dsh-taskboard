@@ -1,8 +1,9 @@
 /**
  * The auto-claim driver (`@navidid/dsh-taskboard/autoclaim`): when an agent
  * session is idle and the deployment has mounted this row, claim the oldest
- * unclaimed `open` task for that session — provided the quota allows — and
- * hand it to the agent as a follow-up turn.
+ * claimable `open` task for that session — provided the quota allows — and
+ * hand it to a background subagent (v0.4 W2), or to the session itself as a
+ * follow-up turn when the subagent seam is unavailable (the v0.3 fallback).
  *
  * v0.3's automation is bound to **quota**, not to a manual toggle (the v0.2
  * plan's design idea 5): the decision to claim is
@@ -12,6 +13,16 @@
  * surprises anyone. When enabled, the claim is a system automation write that
  * bypasses the approval gate (ARCHITECTURE decision 25); everything the agent
  * does AFTER the claim still passes the normal gate.
+ *
+ * v0.4 additions (ARCHITECTURE decisions 28–30):
+ * - **Workspace scoping (W1).** When the session's cwd resolves to a workspace
+ *   (the optional web-only seam), only tasks of that workspace — or unbound
+ *   board-global tasks — are claimable. Unresolvable cwd keeps the pre-v0.4
+ *   whole-board scan.
+ * - **Subagent dispatch (W2).** A claimed task is handed to a background
+ *   subagent via the optional `ctx.subagents` seam; `run.result` settles the
+ *   task (`completed` → `awaiting_human`, `error` → `blocked` + reason). The
+ *   subagent seam ships in `dsh-base`, so the fallback is defensive only.
  *
  * Quota signals researched in v0.3 (ARCHITECTURE decision 26):
  * `agent.session.requestContext()` carries the resolved route plus the
@@ -27,7 +38,9 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+// Type-only: pulls the subagent package's Context augmentation (ctx.subagents).
+import type {} from '@deepseek-ai/dsh-subagent'
 // Type-only: pulls the token-meter package's Context augmentation (ctx.tokenMeter).
 import type {} from '@deepseek-ai/dsh-token-meter'
 import z from '@deepseek-ai/schemastery'
@@ -39,6 +52,14 @@ declare module '@deepseek-ai/dsh-llm' {
     /** The auto-claim driver's follow-up turn; `key` names the claimed task. */
     taskboard: { kind: 'taskboard', key: string }
   }
+}
+
+/** The subagent seam face the driver needs, structurally (W2). */
+interface SubagentsLike {
+  start(
+    name: string,
+    request: { prompt: readonly ContentBlock[], parent: Agent, signal: AbortSignal },
+  ): Promise<{ id: string, result: Promise<{ stopReason: string }> }>
 }
 
 /** Cordis plugin name. */
@@ -62,7 +83,7 @@ export const Config: z<Config> = z.object({
   minRemainingTokens: z.number().step(1).min(0).default(8000),
 })
 
-/** How much task body the follow-up turn quotes; the agent can re-read via tools. */
+/** How much task body the dispatch prompt quotes; the agent can re-read via tools. */
 const BODY_PREVIEW_CHARS = 2000
 
 /** One driver's per-agent state. */
@@ -82,6 +103,12 @@ interface DriverState {
  */
 export function apply(ctx: Context, config: Config): void {
   const states = new Map<Agent, DriverState>()
+  // Optional subagent seam: `dsh-base` ships it everywhere, so this is a
+  // defensive fallback, not a real deployment branch.
+  let subagents: SubagentsLike | undefined
+  ctx.inject(['subagents'], (scoped) => {
+    subagents = scoped.subagents
+  })
 
   function stateFor(agent: Agent): DriverState {
     const existing = states.get(agent)
@@ -101,8 +128,9 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
-   * One serialized drive: quota check, then claim + dispatch the oldest open
-   * task. Returns without side effects when anything is not ready.
+   * One serialized drive: quota check, workspace-scoped scan, then claim +
+   * dispatch the oldest claimable task. Returns without side effects when
+   * anything is not ready.
    */
   async function drive(state: DriverState): Promise<void> {
     const { agent } = state
@@ -115,21 +143,63 @@ export function apply(ctx: Context, config: Config): void {
     // Unknown capacity, or not enough headroom: do not pull work in.
     if (remaining === undefined || remaining < config.minRemainingTokens) return
 
-    const candidate = selectClaimCandidate(ctx.taskboard.list({ status: 'open' }))
+    // v0.4 W1: scope the scan to the session's workspace when resolvable.
+    const cwd = agent.session.header?.cwd
+    const workspaceId = await ctx.taskboard.workspaceIdOfCwd(cwd)
+    const scoped = ctx.taskboard.list({ status: 'open' }).filter(task =>
+      workspaceId === undefined || task.workspaceId === null || task.workspaceId === workspaceId)
+    const candidate = selectClaimCandidate(scoped)
     if (candidate === undefined) return
 
-    const claimed = await ctx.taskboard.autoClaim(candidate.id, agent.id)
+    const claimed = await ctx.taskboard.autoClaim(candidate.id, agent.id, cwd)
     if (claimed === null) return // lost the claim to another session
 
+    // v0.4 W2: hand the task to a background subagent; fall back to a
+    // follow-up turn in the claiming session when the seam is unavailable or
+    // starting it fails.
+    if (subagents !== undefined) {
+      try {
+        const run = await subagents.start('taskboard', {
+          prompt: [{ type: 'text', text: renderDispatchPrompt(claimed) }],
+          parent: agent,
+          signal: new AbortController().signal,
+        })
+        await ctx.taskboard.recordDispatched(claimed.id, agent.id, run.id)
+        void run.result.then(
+          (result) => {
+            const outcome = result.stopReason === 'completed'
+              ? { kind: 'completed' as const }
+              : {
+                kind: 'error' as const,
+                reason: `subagent ${run.id} ended with ${result.stopReason}`,
+              }
+            void ctx.taskboard.settleDispatch(claimed.id, agent.id, outcome)
+              .catch(error => ctx.logger.warn(
+                `taskboard-autoclaim: could not settle dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
+              ))
+          },
+          (error) => {
+            // `run.result` rejects only on an infrastructure fault.
+            void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+              kind: 'error',
+              reason: `subagent ${run.id} failed to run: ${renderThrown(error)}`,
+            }).catch(failure => ctx.logger.warn(
+              `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
+            ))
+          },
+        )
+        return
+      } catch (error) {
+        ctx.logger.warn(
+          `taskboard-autoclaim: could not start subagent for ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
+        )
+      }
+    }
+
     const key = claimed.key ?? claimed.id
-    const text = [
-      `You claimed ${key} on the task board: ${claimed.title}.`,
-      'Work on it now in this session; report progress on the task when done.',
-      claimed.body === '' ? undefined : `\nTask description:\n${bounded(claimed.body)}`,
-    ].filter(line => line !== undefined).join('\n')
     try {
       agent.followup(createUserMessage({
-        content: [{ type: 'text', text }],
+        content: [{ type: 'text', text: renderFollowup(claimed) }],
         source: { kind: 'taskboard', key },
       }))
     } catch (error) {
@@ -190,7 +260,8 @@ export function apply(ctx: Context, config: Config): void {
 
 /**
  * Pick the oldest claimable task: `open` and unclaimed, earliest `createdAt`
- * first. Pure so the scan order is unit-testable.
+ * first. Pure so the scan order is unit-testable; workspace scoping happens in
+ * the driver before this filter.
  * @param tasks - tasks to scan (any status; the filter is applied here).
  * @returns the claim candidate, or `undefined` when none is claimable.
  */
@@ -200,7 +271,28 @@ export function selectClaimCandidate(tasks: readonly Task[]): Task | undefined {
     .sort((a, b) => a.createdAt - b.createdAt)[0]
 }
 
-/** Bound free text quoted into the follow-up turn. */
+/** The dispatch prompt handed to a background subagent (W2). */
+function renderDispatchPrompt(task: Task): string {
+  const key = task.key ?? task.id
+  return [
+    `You were assigned task ${key} on the task board: ${task.title}.`,
+    'Work on it in this session. When finished, report your result as your final message.',
+    'Do not modify the task board yourself — the dispatcher records your outcome.',
+    task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
+  ].filter(line => line !== undefined).join('\n')
+}
+
+/** The fallback follow-up turn handed to the claiming session (v0.3 path). */
+function renderFollowup(task: Task): string {
+  const key = task.key ?? task.id
+  return [
+    `You claimed ${key} on the task board: ${task.title}.`,
+    'Work on it now in this session; report progress on the task when done.',
+    task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
+  ].filter(line => line !== undefined).join('\n')
+}
+
+/** Bound free text quoted into the dispatch prompt. */
 function bounded(text: string): string {
   return text.length <= BODY_PREVIEW_CHARS
     ? text
