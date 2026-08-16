@@ -109,6 +109,38 @@ Moving into `blocked` requires a reason (use `task_block`); leaving `blocked`
 clears it. Blocking is an agent's report — the panel does not offer it as a
 move target, a human unblocks by moving the card anywhere else.
 
+## Automatic claiming (v0.3)
+
+The board can hand work to an idle agent by itself — bound to **token quota**,
+not to a timer: when an agent session goes idle, the auto-claim driver claims
+the oldest unclaimed task in `open` **only if**
+`contextWindow − currentContextTokens ≥ minRemainingTokens`, then wakes the
+agent with a follow-up turn telling it what it claimed. A nearly full context
+gets no new work; a context of unknown capacity gets no new work either.
+
+It is **off by default**: the bundle's `taskboard-autoclaim` row ships
+`disabled: true`, so installing or upgrading never surprises anyone. Enable it
+in your overlay:
+
+```yaml
+# $DSH_HOME/cordis.patch.yml — the row's whole config is replaced, so restate
+# every key you want to keep.
+- id: taskboard-autoclaim
+  disabled: false
+  config:
+    minRemainingTokens: 8000
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `minRemainingTokens` | `8000` | Floor on `contextWindow − totalTokens` before the driver will claim |
+
+Two notes. The claim itself is a system write and skips the approval prompt
+(it is the deployment's configured automation, not the model asking) —
+everything the agent does *after* the claim still passes the normal gate.
+And auto-claim does not yet scope to the session's workspace: any `open` task
+is claimable until workspace binding lands.
+
 ## Commands
 
 `/task list [status]` · `/task show <id|key>` · `/task export`

@@ -40,6 +40,7 @@ export { TaskboardService } from './service.ts'
 export type {
   Actor, ActivityStream, CreateTaskInput, ListFilter, TaskRef, TaskboardStore, UpdateTaskInput,
 } from './service.ts'
+export { selectClaimCandidate } from './autoclaim.ts'
 export { TaskboardError } from './errors.ts'
 export type { TaskboardErrorCode } from './errors.ts'
 export {

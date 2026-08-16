@@ -1,6 +1,6 @@
 {
   "name": "@navidid/dsh-taskboard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Cross-session, workspace-scoped task board for DeepSeek Harness: a capability seam (ctx.taskboard service + storageDomain provider + task tools + /task commands + JSON API), not a session checklist",
   "type": "module",
   "license": "MIT",
@@ -24,6 +24,10 @@
     "./routes": {
       "types": "./lib/types/routes.d.ts",
       "default": "./lib/routes.js"
+    },
+    "./autoclaim": {
+      "types": "./lib/types/autoclaim.d.ts",
+      "default": "./lib/autoclaim.js"
     },
     "./invariant": {
       "types": "./lib/types/invariant.d.ts",
@@ -99,7 +103,9 @@
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
-    "react": "^18.2.0"
+    "react": "^18.2.0",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-token-meter": "0.1.0-rc.6"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -122,6 +128,8 @@
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
     "react": "^18.2.0",
-    "@types/react": "~18.3.1"
+    "@types/react": "~18.3.1",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-token-meter": "0.1.0-rc.6"
   }
 }

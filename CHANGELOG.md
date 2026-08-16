@@ -4,6 +4,31 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [0.3.0] — 2025-08-16
+
+The board can hand work to an idle agent by itself, bound to token quota.
+
+### Added
+
+- **Auto-claim driver** (`taskboard-autoclaim` row, `src/autoclaim.ts`): when
+  an agent session goes idle, claim the oldest unclaimed `open` task and wake
+  the agent with a follow-up turn — only when
+  `contextWindow − currentTokens ≥ minRemainingTokens` (quota signal from
+  `agent.session.requestContext()` + `ctx.tokenMeter.measure()`, per the
+  research recorded in ARCHITECTURE decision 26).
+- **`TaskboardService.autoClaim`**: the automation claim write, serialized so
+  two idle agents cannot both claim one task; records a `claimed` activity
+  entry; refuses under `writePolicy: 'off'`.
+- **Disabled by default**: the bundle patch mounts the row with
+  `disabled: true` — opt in via your overlay (`disabled: false` +
+  `minRemainingTokens`).
+
+### Migration
+
+None — this version is additive: no schema change, no status change. The new
+row ships disabled, so upgrading a v0.2 board changes nothing until you enable
+auto-claim.
+
 ## [0.2.0] — 2025-08-16
 
 The board becomes agent-native: the status machine is reorganised around

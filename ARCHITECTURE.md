@@ -251,6 +251,48 @@ reason on the way out. Making `blocked` a selectable target would force either
 a reason prompt into the panel or an error on a click, both worse than not
 offering it.
 
+**25. Auto-claim is the package's THIRD write that does not pass `gate()` — and
+it is opt-in by construction.** v0.3's driver (`src/autoclaim.ts`, its own
+cordis row) claims the oldest `open` task for an idle session and hands it to
+the agent as a follow-up turn. The claim itself is a system automation, not the
+model asking, so it bypasses the approval gate like the seed project and the
+`key` backfill; the row ships `disabled: true` in the bundle patch, so a
+deployment that never mounts it (or never flips it on) gets no auto-claim at
+all, and everything the agent does AFTER the claim still passes the normal
+gate. `writePolicy: 'off'` still refuses the claim, because that is a
+deployment declaring the board read-only.
+
+**26. Spike S3 (token-meter research): the quota signal is
+`contextWindow − totalTokens`, and when capacity is unknown the driver does
+nothing.** The v0.2 plan required knowing what `ctx.tokenMeter` can signal
+before building auto-claim. Findings: `ctx.tokenMeter.measure(session)` returns
+a `TokenMeasurement` whose `totalTokens` is the current request-and-response
+pressure (provider-usage-anchored when available, heuristically repriced
+otherwise); the meter itself has NO capacity concept — the ceiling comes from
+`agent.session.requestContext()`, whose `RequestContext.contextWindow` is the
+provider-advertised maximum for the session's resolved route (same source the
+compaction policy reads). So the driver's rule is: claim only when
+`contextWindow − totalTokens ≥ Config.minRemainingTokens` (default 8000). If
+`requestContext()` is absent (a brand-new session) or `contextWindow` is not
+advertised, the driver skips — conservatively, pulling work into a context of
+unknown size would risk an immediate overflow. The `totalTokens` of a fresh
+idle session is small, so in practice the floor only bites under sustained
+pressure, which is exactly the intent: automation binds to capacity, not to a
+manual switch.
+
+**27. The driver mirrors `dsh-goal-round-driver`'s coalescing pattern.** An
+`agent/status → idle` transition requests one serialized drive per agent
+(`requestDrive`), rechecked against quiescence before acting: the row's own
+fiber is ACTIVE, the agent is still the live registry handle, `agent.status`
+is `idle`, and `agent.inbox.hasPending` is false — so auto-claim never
+interleaves with a user's pending prompt. Dispatch is `agent.followup()` with a
+`createUserMessage` whose source kind is this package's own merge-extensible
+`taskboard` entry; the claim itself is serialized on the service's `claimChain`
+so two idle agents scanning one `open` column cannot both win. The activity
+entry for a claim is appended AFTER the authoritative task write, so a hard
+process exit between the two loses only the audit line, never the claim — the
+activity stream is best-effort history, the task state is authoritative.
+
 **13. The invariant companion is empty, with the reason recorded.** Stored
 records are already validated by the storage seam on every load and write;
 revision monotonicity is enforced in `update` and covered by tests; the approval
@@ -334,10 +376,9 @@ scrolls.
 
 - **Workspace binding.** `Task.workspaceId` is stored and filterable, but nothing
   yet resolves it against `ctx.workspaceRegistry` or auto-assigns from a session's
-  cwd.
+  cwd. Auto-claim consequently does not scope its scan to the session's
+  workspace — an open task from any workspace is claimable. When workspace
+  binding lands, the scan should filter first.
 - **Subagent claim-and-execute.** `task_claim` records the claiming session;
   handing a claimed task to a background subagent through `ctx.subagents` +
-  `ctx.jobs` is the next capability, not a v0.2 promise.
-- **Auto-claim (v0.3).** The v0.2 plan deliberately defers automation bound to
-  quota signals; the status machine's `open` column is the seam it will scan,
-  and `Config` leaves room for the knobs.
+  `ctx.jobs` is the next capability, not a v0.3 promise.

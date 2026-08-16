@@ -441,6 +441,84 @@ describe('activity stream', () => {
   })
 })
 
+describe('auto-claim', () => {
+  it('claims an open task for the session and records the activity', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Pick me' }, actor)
+
+    const claimed = await service.autoClaim(task.key as string, 'session-auto')
+
+    expect(claimed?.status).toBe('in_progress')
+    expect(claimed?.claimedBySessionId).toBe('session-auto')
+    expect(claimed?.revision).toBe(1)
+    const entry = service.activityOf(task.id)[0]!
+    expect(entry.action).toBe('claimed')
+    expect(entry.actor).toBe('agent')
+    expect(entry.actorLabel).toBe('session-auto')
+    expect(entry.from).toBeNull()
+    expect(entry.to).toBe('session-auto')
+  })
+
+  it('returns null for an already-claimed task', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Taken' }, actor)
+    await service.autoClaim(task.key as string, 'session-a')
+
+    await expect(service.autoClaim(task.key as string, 'session-b')).resolves.toBeNull()
+    expect(service.get(task.key as string)?.claimedBySessionId).toBe('session-a')
+  })
+
+  it('returns null for a task that is not open', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Drafting', status: 'draft' }, actor)
+    await expect(service.autoClaim(task.key as string, 'session-a')).resolves.toBeNull()
+  })
+
+  it('returns null for a missing task', async () => {
+    const { service } = build('auto')
+    await expect(service.autoClaim('TB-99', 'session-a')).resolves.toBeNull()
+  })
+
+  it('lets only one of two parallel claims win', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Contested' }, actor)
+    const [first, second] = await Promise.all([
+      service.autoClaim(task.key as string, 'session-a'),
+      service.autoClaim(task.key as string, 'session-b'),
+    ])
+    expect([first, second].filter(claimed => claimed !== null)).toHaveLength(1)
+    const winner = first ?? second
+    expect(winner?.claimedBySessionId).toBe(
+      service.get(task.key as string)?.claimedBySessionId,
+    )
+  })
+
+  it("refuses under writePolicy 'off'", async () => {
+    const { service, store } = build('off')
+    // `create` itself is refused under 'off', so seed the task through the store.
+    await store.putTask({
+      id: 't-off',
+      key: 'TB-1',
+      projectId: PROJECT_ID,
+      title: 'Read only',
+      body: '',
+      status: 'open',
+      priority: 'normal',
+      labels: [],
+      workspaceId: null,
+      claimedBySessionId: null,
+      origin: 'human',
+      blockedReason: null,
+      revision: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    await expect(service.autoClaim('TB-1', 'session-a'))
+      .rejects.toMatchObject({ code: 'write-denied' })
+    expect(service.get('TB-1')?.claimedBySessionId).toBeNull()
+  })
+})
+
 describe('export and import', () => {
   it('round-trips a board and keys keyless imported tasks', async () => {
     const source = build('auto')

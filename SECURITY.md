@@ -66,6 +66,17 @@ the same audit facts the session log already carries for agent writes, now in
 board state. A refused write never produces an entry; refusals stay in the
 session log only.
 
+**Auto-claim is an opt-in automation, and its dispatch message is
+model-visible.** The `taskboard-autoclaim` row ships disabled; a deployment
+that enables it lets an idle agent claim the oldest `open` task without asking.
+The claim write is a system automation and bypasses the approval gate (the
+agent's subsequent work is still gated normally). The follow-up turn the driver
+sends quotes the claimed task's title and up to 2000 characters of its body
+into the model context — so a task an agent might auto-claim should be treated
+as model-visible text, exactly like anything `task_list` returns. The claim is
+quota-gated (`contextWindow − totalTokens ≥ minRemainingTokens`), so the
+automation cannot pull work into an overflowing context.
+
 **Approval payloads quote the change.** So a human approves a concrete
 before/after rather than an abstract verb, an approval prompt contains the task
 title and up to 300 characters of the body. That text reaches whatever surface

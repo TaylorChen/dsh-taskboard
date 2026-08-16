@@ -201,6 +201,12 @@ export class TaskboardService {
    * allocation keeps `TB-N` unique across parallel sessions.
    */
   private keyChain: Promise<number> = Promise.resolve(0)
+  /**
+   * Serializes auto-claims. Reads are synchronous from memory, so without a
+   * chain two idle agents scanning the same `open` column could both read an
+   * unclaimed task before either's `putTask` lands, and both would claim it.
+   */
+  private claimChain: Promise<Task | null> = Promise.resolve(null)
 
   /**
    * @param deps - provider, approval seam, and validated deployment config.
@@ -398,6 +404,56 @@ export class TaskboardService {
   }
 
   /**
+   * Automatically claim an open task for a session (the auto-claim driver's
+   * write). This is the package's THIRD write that does not pass `gate()` —
+   * the deployment opts in by mounting the `taskboard-autoclaim` row, and the
+   * claim is a system automation, not a model asking (ARCHITECTURE decision
+   * 25). `writePolicy: 'off'` still refuses, because that is a deployment
+   * declaring the board read-only.
+   *
+   * Race safety: claims are serialized on `claimChain`, so two idle agents
+   * scanning the same `open` column cannot both claim one task — the loser's
+   * read sees the winner's committed write and returns `null`.
+   * @param ref - short key or full id.
+   * @param sessionId - the claiming session.
+   * @returns the claimed task, or `null` when the task is not claimable
+   * (missing, not `open`, or already claimed).
+   */
+  async autoClaim(ref: TaskRef, sessionId: string): Promise<Task | null> {
+    const claimed = this.claimChain.then(async () => {
+      if (this.deps.writePolicy === 'off') {
+        throw new TaskboardError('write-denied', "writePolicy is 'off': auto-claim refused")
+      }
+      const current = this.resolve(ref)
+      if (current === undefined) return null
+      if (current.status !== 'open' || current.claimedBySessionId !== null) return null
+
+      const at = this.now()
+      const next: Task = {
+        ...current,
+        status: 'in_progress',
+        claimedBySessionId: sessionId,
+        revision: current.revision + 1,
+        updatedAt: at,
+      }
+      await this.deps.store.putTask(next)
+      await this.recordActivityLabeled(
+        current.id as TaskId,
+        'claimed',
+        null,
+        sessionId,
+        { actor: 'agent', actorLabel: sessionId },
+        at,
+      )
+      return next
+    })
+    // Keep the chain alive even when a claim fails, so one failure does not
+    // wedge every later auto-claim.
+    this.claimChain = claimed.then(() => null, () => null)
+    return claimed
+  }
+
+  /**
    * Remove one task behind the approval gate.
    * @param ref - short key or full id.
    * @param actor - who is asking.
@@ -572,11 +628,23 @@ export class TaskboardService {
     actor: Actor,
     at: number,
   ): Promise<void> {
+    await this.recordActivityLabeled(taskId, action, from, to, actorFields(actor), at)
+  }
+
+  /** `recordActivity` with the who/label resolved by the caller (automation paths). */
+  private async recordActivityLabeled(
+    taskId: TaskId,
+    action: ActivityAction,
+    from: string | null,
+    to: string | null,
+    who: { actor: 'human' | 'agent', actorLabel: string },
+    at: number,
+  ): Promise<void> {
     const entry: Activity = {
       id: this.newId(),
       taskId,
       at,
-      ...actorFields(actor),
+      ...who,
       action,
       from,
       to,

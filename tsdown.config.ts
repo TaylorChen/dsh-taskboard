@@ -32,6 +32,7 @@ const nodeHalf: UserConfig = {
     index: 'src/index.ts',
     tool: 'src/tool.ts',
     routes: 'src/routes.ts',
+    autoclaim: 'src/autoclaim.ts',
     invariant: 'src/invariant.ts',
   },
   outDir: 'lib',

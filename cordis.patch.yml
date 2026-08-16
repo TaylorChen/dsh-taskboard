@@ -1,13 +1,19 @@
-# dsh-taskboard bundle patch: three rows, split by the host capability each needs.
+# dsh-taskboard bundle patch: four rows, split by the host capability each needs.
 #
-# `taskboard`        — the capability seam itself: opens the `taskboard` storage
-#                      domain, provides `ctx.taskboard`, registers the `/task`
-#                      commands. Injects `storageDomain`.
-# `taskboard-tool`   — the model-facing half (`task_*` tools). Kept separate so a
-#                      deployment can run the board as a human-only surface by
-#                      disabling this row alone.
-# `taskboard-routes` — the read JSON API for the browser panel. Injects
-#                      `webServer`.
+# `taskboard`            — the capability seam itself: opens the `taskboard`
+#                          storage domain, provides `ctx.taskboard`, registers
+#                          the `/task` commands. Injects `storageDomain`.
+# `taskboard-tool`       — the model-facing half (`task_*` tools). Kept separate
+#                          so a deployment can run the board as a human-only
+#                          surface by disabling this row alone.
+# `taskboard-routes`     — the read JSON API for the browser panel. Injects
+#                          `webServer`.
+# `taskboard-autoclaim`  — the v0.3 auto-claim driver: claims the oldest open
+#                          task for an idle session when the token quota allows.
+#                          Ships DISABLED — mounting the bundle must never
+#                          surprise anyone; enable it in your overlay with
+#                          `- id: taskboard-autoclaim` / `disabled: false` (see
+#                          README "Automatic claiming").
 #
 # THESE ROWS REQUIRE THE WEB-APP BUNDLE. dsh fails the whole boot on a row that
 # never activates ("N entries did not activate"); a pending row is NOT quietly
@@ -15,9 +21,6 @@
 # `webServer` therefore fails loud at startup, which is the intended dsh
 # behaviour for a misconfiguration. A headless deployment must mount the storage
 # rows itself and switch off the routes row — see README.
-#
-# A patch replaces a row's whole `config`, so an overlay re-stating `writePolicy`
-# must re-state every key it wants to keep.
 #
 # A patch replaces a row's whole `config`, so an overlay re-stating `writePolicy`
 # must re-state every key it wants to keep.
@@ -32,3 +35,9 @@
 
     - id: taskboard-routes
       name: '@navidid/dsh-taskboard/routes'
+
+    - id: taskboard-autoclaim
+      name: '@navidid/dsh-taskboard/autoclaim'
+      disabled: true
+      config:
+        minRemainingTokens: 8000
