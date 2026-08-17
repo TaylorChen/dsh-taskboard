@@ -79,6 +79,9 @@ export function apply(ctx: Context): void {
         id: workspace.id,
         name: workspace.title,
       })),
+      // v1.1 A2: which subagent is running which task, so the panel can show
+      // that an in-progress task is alive (or stuck).
+      executions: ctx.taskboard.executions(),
     })
   })
 

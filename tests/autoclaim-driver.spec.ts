@@ -65,6 +65,7 @@ function fakeAgent(sessionId: string, contextWindow: number | undefined, cwd?: s
 /** A fake subagent seam: records starts and lets the test settle runs. */
 function fakeSubagents() {
   const starts: Array<{ name: string, prompt: Array<{ text?: string }>, parentId: string, agentOptions?: unknown }> = []
+  let disposed = 0
   const pending: Array<{
     id: string,
     resolve: (result: { stopReason: string, structured?: unknown, output?: Array<{ text?: string }> }) => void,
@@ -73,6 +74,7 @@ function fakeSubagents() {
   let seq = 0
   return {
     starts,
+    disposed: () => disposed,
     settleNext: (
       stopReason: string,
       structured?: unknown,
@@ -83,12 +85,14 @@ function fakeSubagents() {
       prompt: Array<{ text?: string }>, parent: { id: string }, agentOptions?: unknown,
     }) => {
       starts.push({ name, prompt: request.prompt, parentId: request.parent.id, agentOptions: request.agentOptions })
-      return {
+      const run = {
         id: `sub-${++seq}`,
         result: new Promise<{ stopReason: string, structured?: unknown }>((resolve, reject) => {
           pending.push({ id: `sub-${seq}`, resolve, reject })
         }),
+        dispose: async () => { disposed += 1 },
       }
+      return run
     },
   }
 }
@@ -117,7 +121,7 @@ function fakeCtx(overrides: Record<string, unknown>) {
     },
     effect: (fn: () => unknown): unknown => fn(),
     fiber: { state: 2 },
-    logger: { warn: () => {} },
+    logger: { warn: () => {}, info: () => {} },
     ...overrides,
   }
 }
@@ -145,7 +149,10 @@ interface Rig {
 function rig(
   contextWindow: number | undefined,
   minRemainingTokens: number,
-  options: { workspaceCwd?: string, withSubagents?: boolean, sessionContext?: boolean } = {},
+  options: {
+    workspaceCwd?: string, withSubagents?: boolean, sessionContext?: boolean,
+    dispatchTimeoutMs?: number,
+  } = {},
 ): Rig & { subagents: ReturnType<typeof fakeSubagents>, injections: unknown[] } {
   const store = fakeStore()
   const service = new TaskboardService({
@@ -177,6 +184,7 @@ function rig(
     subagentProvider: 'spawn',
     sessionContext: options.sessionContext ?? false,
     sessionContextLimit: 5,
+    dispatchTimeoutMs: options.dispatchTimeoutMs ?? 3_600_000,
   })
   const actor: Actor = { kind: 'human', via: 'panel' }
   return {
@@ -412,5 +420,53 @@ describe('auto-claim driver', () => {
 
     expect(service.get(task.key as string)?.claimedBySessionId).toBe('session-a')
     expect(service.get(task.key as string)?.revision).toBe(1)
+  })
+
+  it('cancels the subagent when a dispatched task leaves in_progress (v1.1)', async () => {
+    const { service, actor, subagents, emitIdle, settle, ctx } = rig(128_000, 0, { withSubagents: true })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Running', acceptanceCriteria: ['w'] }, actor)
+
+    emitIdle()
+    await settle()
+    expect(subagents.starts).toHaveLength(1)
+    expect(service.executionOf(task.key as string)?.subagentId).toBe('sub-1')
+
+    // A human moves the task out of in_progress; the driver's
+    // domain/changed listener cancels the child.
+    const stored = await service.update(task.key as string, { status: 'draft' }, actor)
+    ctx.emit('domain/changed', {
+      domain: 'taskboard', table: 'tasks', key: stored.id, operation: 'put', value: stored,
+    })
+    await settle()
+
+    expect(subagents.disposed()).toBe(1)
+    expect(service.executionOf(task.key as string)).toBeUndefined()
+
+    // A late child result must not double-settle (task already moved).
+    subagents.settleNext('completed', {
+      criteria: [{ criterion: 'w', met: true, note: '' }], artifacts: [], summary: 'late',
+    })
+    await settle()
+    expect(service.get(task.key as string)?.status).toBe('draft')
+  })
+
+  it('times out a dispatched execution and settles it blocked (v1.1)', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, {
+      withSubagents: true, dispatchTimeoutMs: 20,
+    })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Slow', acceptanceCriteria: ['w'] }, actor)
+
+    emitIdle()
+    await settle()
+    expect(subagents.starts).toHaveLength(1)
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    const settled = service.get(task.key as string)
+    expect(settled?.status).toBe('blocked')
+    expect(settled?.blockedReason).toContain('execution timed out')
+    expect(settled?.evidence?.summary).toContain('exceeded 20 ms')
+    expect(subagents.disposed()).toBe(1)
   })
 })

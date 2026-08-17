@@ -28,6 +28,28 @@ starts feeding the next task.
 
 None — additive config only; the digest is opt-in.
 
+## [1.1.0] — 2025-08-17
+
+Stop-loss and closure (from the v1.1 plan).
+
+### Added
+
+- **Dispatch cancel**: moving a dispatched task out of `in_progress` (human
+  takeover) stops the subagent (`domain/changed` listener + `run.dispose`);
+  a late child result never double-settles.
+- **Dispatch timeout**: `Config.dispatchTimeoutMs` (default 30 min) disposes an
+  over-running child and settles the task `blocked` with a timeout reason.
+- **Execution visibility**: the board route carries `executions` and the panel
+  shows an in-progress card's running subagent + elapsed minutes.
+- **Bounce reasons**: 打回待立项 requires a reason, written to the notes and
+  the activity stream.
+- Real E2E (`tests/e2e/cancel-stop.mjs`): dispatch visible via `executionOf`,
+  human takeover clears it, task stays done through the settle window.
+
+### Migration
+
+None — additive config (`dispatchTimeoutMs`) and read-only surfaces.
+
 ## [1.0.0] — 2025-08-17
 
 First stable release. The agent-native task board has been verified end to end

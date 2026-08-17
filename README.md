@@ -216,6 +216,20 @@ next task's context.
   never overwrites, and records a `noted` activity entry). The card shows the
   latest notes.
 
+## Stop-loss: cancel, timeout, visibility, bounce reasons (v1.1)
+
+- **Cancel.** A dispatched task runs in an independent subagent; if a human
+  moves it out of `in_progress` (takeover, cancellation), the child is stopped
+  instead of burning tokens. A late child result never overwrites a task the
+  human already moved.
+- **Timeout.** `dispatchTimeoutMs` (default 30 min) on the auto-claim row
+  disposes an over-running child and settles the task 遇到阻碍 (`blocked`)
+  with a timeout reason.
+- **Visibility.** While a task is dispatched, the card shows 执行中 with the
+  subagent id and elapsed minutes.
+- **Bounce reasons.** 打回待立项 now asks why — the reason lands in the task
+  notes and the activity stream, so the next executor knows what to change.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,

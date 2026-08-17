@@ -90,6 +90,8 @@ interface BoardPayload {
   projects: BoardProject[]
   tasks: BoardTask[]
   workspaces: BoardWorkspace[]
+  /** v1.1 A2: task id -> running subagent, for the in-progress badge. */
+  executions: Record<string, { subagentId: string, startedAt: number }>
 }
 
 /** One activity entry as the activity route serves it. */
@@ -155,6 +157,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   // Spec editor (v1.0 UX fix): which draft card is collecting acceptance
   // criteria, and the draft text (one criterion per line).
   const [specDraft, setSpecDraft] = useState<{ taskId: string, criteria: string } | null>(null)
+  // Bounce editor (v1.1 B1): which awaiting_human card is being bounced, and
+  // the required reason.
+  const [bounceDraft, setBounceDraft] = useState<{ taskId: string, reason: string } | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     setBusy(true)
@@ -250,6 +255,19 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     })
     setSpecDraft(null)
   }, [specDraft, write])
+
+  /** Confirm a bounce: the reason is required and lands in the task notes. */
+  const confirmBounce = useCallback(async (task: BoardTask): Promise<void> => {
+    if (bounceDraft === null || bounceDraft.taskId !== task.id) return
+    const reason = bounceDraft.reason.trim()
+    if (reason === '') return
+    await write(`/api/taskboard/task/${encodeURIComponent(task.id)}`, 'PATCH', {
+      status: 'draft',
+      note: `bounce: ${reason}`,
+      expectedRevision: task.revision,
+    })
+    setBounceDraft(null)
+  }, [bounceDraft, write])
 
   const projectName = (id: string): string =>
     board?.projects.find(project => project.id === id)?.name ?? id
@@ -528,11 +546,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           <button
                             type="button"
                             onClick={() => {
-                              void write(
-                                `/api/taskboard/task/${encodeURIComponent(task.id)}`,
-                                'PATCH',
-                                { status: 'draft', expectedRevision: task.revision },
-                              )
+                              // v1.1 B1: a bounce must carry a reason; open
+                              // the reason editor instead of bouncing blind.
+                              setBounceDraft({ taskId: task.id, reason: '' })
                             }}
                             style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
                           >
@@ -540,6 +556,50 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           </button>
                         </div>
                       )}
+                      {task.status === 'awaiting_human' && bounceDraft?.taskId === task.id && (
+                        <div style={{ ...surface, display: 'flex', flexDirection: 'column', gap: 6, padding: 8, marginBottom: 6 }}>
+                          <input
+                            autoFocus
+                            value={bounceDraft.reason}
+                            placeholder={t('bounce.reason')}
+                            onChange={event => { setBounceDraft({ taskId: task.id, reason: event.target.value }) }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') void confirmBounce(task)
+                              if (event.key === 'Escape') setBounceDraft(null)
+                            }}
+                            style={{ ...control, fontSize: 11 }}
+                          />
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => { void confirmBounce(task) }}
+                              disabled={busy || bounceDraft.reason.trim() === ''}
+                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', flex: 1 }}
+                            >
+                              {t('bounce.confirm')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setBounceDraft(null) }}
+                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                            >
+                              {t('cancel')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {/* v1.1 A2: an in-progress task that is dispatched shows
+                          which subagent is running it and for how long. */}
+                      {task.status === 'in_progress' && board?.executions[task.id] !== undefined && (() => {
+                        const execution = board.executions[task.id] as { subagentId: string, startedAt: number }
+                        return (
+                          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
+                            {t('execution.running')} · {sessionShort(execution.subagentId)}
+                            {' · '}
+                            {Math.max(1, Math.round((Date.now() - execution.startedAt) / 60_000))}{t('execution.minutes')}
+                          </div>
+                        )
+                      })()}
                       {task.labels.length > 0 && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
                           {task.labels.map(label => (

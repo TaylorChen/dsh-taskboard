@@ -525,3 +525,25 @@ panel's overdue hint; it deliberately does NOT reintroduce estimation, and
 overwrites, recording a `noted` activity entry) — distinct from `body` (the
 original intent) and the activity stream (structured events). All three are
 `.default()`-compatible additions, so v0.8 records read back unchanged.
+
+**37. v1.1 (A1): execution is cancellable and time-bounded.** The auto-claim
+driver keeps a process-local `executions` map (task id → subagent run, start
+time, timeout timer). A `domain/changed` listener (storage-domain emits the
+new task snapshot on every write) cancels the child the moment a dispatched
+task leaves `in_progress` — a human takeover, cancellation, or edit stops the
+subagent instead of letting it burn tokens. `Config.dispatchTimeoutMs`
+(default 30 min) disposes an over-running child and settles the task `blocked`
+with a timeout reason. The settle callback is ownership-guarded: it only
+writes back while the execution is still in the map, so a cancelled child's
+late `run.result` can never double-settle a task the human already moved.
+
+**38. v1.1 (A2): execution is visible.** The same map feeds a tracker the
+service exposes (`setExecutionTracker` → `executionOf` / `executions`); the
+board route carries `executions` and the panel shows an in-progress card's
+running subagent and elapsed minutes. Without the driver row the tracker is
+absent and nothing is shown — visibility is a property of having dispatched.
+
+**39. v1.1 (B1): a bounce carries its reason.** The panel's 打回待立项 now
+requires a reason, written into the task notes (`note: "bounce: …"`) alongside
+the `status → draft` migration — the activity stream reconstructs the full
+bounce (who, when, why), so the next executor knows what to change.

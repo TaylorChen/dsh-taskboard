@@ -242,6 +242,12 @@ export interface ExperienceCard {
   readonly summary: string
 }
 
+/** A task's live execution (v1.1 A2): which subagent, since when. */
+export interface ExecutionInfo {
+  readonly subagentId: string
+  readonly startedAt: number
+}
+
 /** A task's activity stream, newest first (the presentation order). */
 export type ActivityStream = readonly Activity[]
 
@@ -272,6 +278,12 @@ export class TaskboardService {
    * headless: auto-assignment and scoping fall back to board-global.
    */
   private workspaceResolver: ((cwd: string | undefined) => Promise<string | undefined>) | undefined
+  /**
+   * The execution tracker injected by the auto-claim driver (v1.1 A2): which
+   * in-progress task is running under which subagent. Absent when the driver
+   * row is not mounted — `executionOf` then returns undefined.
+   */
+  private executionTracker: { executionOf(taskId: string): ExecutionInfo | undefined } | undefined
 
   /**
    * @param deps - provider, approval seam, and validated deployment config.
@@ -298,6 +310,40 @@ export class TaskboardService {
    */
   async workspaceIdOfCwd(cwd: string | undefined): Promise<string | undefined> {
     return this.workspaceResolver?.(cwd)
+  }
+
+  /**
+   * Inject the execution tracker (v1.1 A2). The auto-claim driver calls this
+   * on mount, so the panel can show which subagent is running a task.
+   * @param tracker - resolves a task id to its live execution, if any.
+   */
+  setExecutionTracker(tracker: { executionOf(taskId: string): ExecutionInfo | undefined }): void {
+    this.executionTracker = tracker
+  }
+
+  /**
+   * Read one task's live execution (v1.1 A2).
+   * @param ref - short key or full id.
+   * @returns the running subagent id and start time, or `undefined` when the
+   * task is not dispatched or the driver row is not mounted.
+   */
+  executionOf(ref: TaskRef): ExecutionInfo | undefined {
+    const task = this.require(ref)
+    return this.executionTracker?.executionOf(task.id)
+  }
+
+  /**
+   * Every task's live execution, for the panel (v1.1 A2).
+   * @returns a map of task id to execution info for dispatched tasks.
+   */
+  executions(): Readonly<Record<string, ExecutionInfo>> {
+    const result: Record<string, ExecutionInfo> = {}
+    if (this.executionTracker === undefined) return result
+    for (const task of this.deps.store.listTasks()) {
+      const info = this.executionTracker.executionOf(task.id)
+      if (info !== undefined) result[task.id] = info
+    }
+    return result
   }
 
   /**

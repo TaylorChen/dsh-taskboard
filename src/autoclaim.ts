@@ -43,6 +43,7 @@ import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 // Type-only: pulls the token-meter package's Context augmentation (ctx.tokenMeter).
 import type {} from '@deepseek-ai/dsh-token-meter'
+import type { DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import z from '@deepseek-ai/schemastery'
 import type {} from './index.ts'
 import type { Task } from './domain.ts'
@@ -72,6 +73,7 @@ interface SubagentsLike {
       output?: readonly ContentBlock[]
       structured?: unknown
     }>
+    dispose(): Promise<void>
   }>
 }
 
@@ -131,6 +133,11 @@ export interface Config {
   sessionContext: boolean
   /** v0.8: how many of each digest section (open tasks / experience cards). */
   sessionContextLimit: number
+  /**
+   * v1.1 (A1): how long a dispatched subagent may run before the driver
+   * disposes it and settles the task `blocked` with a budget/timeout reason.
+   */
+  dispatchTimeoutMs: number
 }
 
 /** Loader schema with the deployment's defaults. */
@@ -139,6 +146,7 @@ export const Config: z<Config> = z.object({
   subagentProvider: z.string().min(1).default('spawn'),
   sessionContext: z.boolean().default(false),
   sessionContextLimit: z.number().step(1).min(1).default(5),
+  dispatchTimeoutMs: z.number().step(1).min(1).default(30 * 60 * 1000),
 })
 
 /** How much task body the dispatch prompt quotes; the agent can re-read via tools. */
@@ -154,6 +162,15 @@ interface DriverState {
   stopping: boolean
 }
 
+/** One live dispatched execution (v1.1 A1/A2): cancel + timeout + visibility. */
+interface Execution {
+  readonly taskId: string
+  readonly sessionId: string
+  readonly run: { id: string, dispose(): Promise<void> }
+  readonly startedAt: number
+  readonly timer: ReturnType<typeof setTimeout>
+}
+
 /**
  * Register the auto-claim driver.
  * @param ctx - context carrying agents, taskboard, and the token meter.
@@ -161,11 +178,22 @@ interface DriverState {
  */
 export function apply(ctx: Context, config: Config): void {
   const states = new Map<Agent, DriverState>()
+  // Live dispatched executions, keyed by task id (v1.1 A1/A2). Also the
+  // visibility source the service exposes to the panel.
+  const executions = new Map<string, Execution>()
   // Optional subagent seam: `dsh-base` ships it everywhere, so this is a
   // defensive fallback, not a real deployment branch.
   let subagents: SubagentsLike | undefined
   ctx.inject(['subagents'], (scoped) => {
     subagents = scoped.subagents
+  })
+  ctx.taskboard.setExecutionTracker({
+    executionOf: (taskId: string) => {
+      const execution = executions.get(taskId)
+      return execution === undefined
+        ? undefined
+        : { subagentId: execution.run.id, startedAt: execution.startedAt }
+    },
   })
 
   function stateFor(agent: Agent): DriverState {
@@ -232,6 +260,18 @@ export function apply(ctx: Context, config: Config): void {
           },
         })
         await ctx.taskboard.recordDispatched(claimed.id, agent.id, run.id)
+        // v1.1 (A1/A2): register the execution — the settle callback only
+        // writes back while this execution is still owned, so a cancelled
+        // child can never double-settle, and the timeout timer can fire.
+        const execution: Execution = {
+          taskId: claimed.id,
+          sessionId: agent.id,
+          run,
+          startedAt: Date.now(),
+          timer: setTimeout(() => { void timeoutExecution(executions, ctx, config, claimed.id) }, config.dispatchTimeoutMs),
+        }
+        execution.timer.unref?.()
+        executions.set(claimed.id, execution)
         // The settle runs after the child's turn — possibly long after this
         // drive returns, even after the app starts closing. The whole callback
         // is guarded so a settling child can never produce an unhandled
@@ -240,6 +280,10 @@ export function apply(ctx: Context, config: Config): void {
         void run.result.then(
           async (result) => {
             try {
+              // Ownership guard: if the execution was cancelled (task moved
+              // off in_progress, or timed out), do not settle a second time.
+              if (executions.delete(claimed.id) === false) return
+              clearTimeout(execution.timer)
               if (result.stopReason === 'completed') {
                 const report = isTaskEvidence(result.structured)
                 if (report !== undefined) {
@@ -284,6 +328,8 @@ export function apply(ctx: Context, config: Config): void {
           async (error) => {
             // `run.result` rejects only on an infrastructure fault.
             try {
+              if (executions.delete(claimed.id) === false) return
+              clearTimeout(execution.timer)
               await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
                 kind: 'error',
                 reason: `subagent ${run.id} failed to run`,
@@ -365,11 +411,65 @@ export function apply(ctx: Context, config: Config): void {
     ctx.on('agent/disposed', onDisposed)
     ctx.on('agent/session-start', onSessionStart)
     ctx.on('agent/status', onStatus)
+    // v1.1 (A1): if a dispatched task leaves in_progress (a human took over,
+    // cancelled it, moved it on), stop the child instead of letting it burn
+    // tokens. `domain/changed` carries the new task snapshot.
+    ctx.on('domain/changed', (change: DomainChanged) => {
+      if (change.domain !== 'taskboard' || change.table !== 'tasks' || change.operation !== 'put') return
+      const task = change.value as { status?: string } | undefined
+      if (task === undefined || task.status === 'in_progress') return
+      const execution = executions.get(change.key)
+      if (execution === undefined) return
+      executions.delete(change.key)
+      clearTimeout(execution.timer)
+      void execution.run.dispose().catch(error => ctx.logger.warn(
+        `taskboard-autoclaim: could not dispose cancelled execution of task ${change.key}: ${renderThrown(error)}`,
+      ))
+      ctx.logger.info(
+        `taskboard-autoclaim: cancelled dispatched subagent ${execution.run.id} (task ${change.key} left in_progress)`,
+      )
+    })
     return () => {
       for (const state of states.values()) state.stopping = true
+      for (const execution of executions.values()) clearTimeout(execution.timer)
       states.clear()
+      executions.clear()
     }
   }, 'dsh-taskboard.autoclaim')
+}
+
+/**
+ * Time out one dispatched execution (v1.1 A1): dispose the child and settle the
+ * task `blocked` with a timeout reason. The ownership guard in the settle
+ * callback keeps a later `run.result` from double-settling.
+ */
+async function timeoutExecution(
+  executions: Map<string, Execution>,
+  ctx: Context,
+  config: Config,
+  taskId: string,
+): Promise<void> {
+  const execution = executions.get(taskId)
+  if (execution === undefined) return
+  executions.delete(taskId)
+  try {
+    await execution.run.dispose()
+  } catch (error) {
+    ctx.logger.warn(
+      `taskboard-autoclaim: could not dispose timed-out subagent ${execution.run.id}: ${renderThrown(error)}`,
+    )
+  }
+  try {
+    await ctx.taskboard.settleDispatch(taskId, execution.sessionId, {
+      kind: 'error',
+      reason: 'execution timed out',
+      diagnosis: `dispatched subagent ${execution.run.id} exceeded ${config.dispatchTimeoutMs} ms`,
+    })
+  } catch (error) {
+    ctx.logger.warn(
+      `taskboard-autoclaim: could not settle timed-out dispatch of ${taskId}: ${renderThrown(error)}`,
+    )
+  }
 }
 
 /**

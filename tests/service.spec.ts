@@ -934,6 +934,22 @@ describe('executor, dueAt, notes (v0.9)', () => {
   })
 })
 
+describe('execution visibility (v1.1 A2)', () => {
+  it('exposes live executions injected by the driver', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Runs', acceptanceCriteria: ['w'] }, actor)
+    expect(service.executionOf(task.key as string)).toBeUndefined()
+    expect(service.executions()).toEqual({})
+
+    service.setExecutionTracker({ executionOf: (id) => (id === task.id
+      ? { subagentId: 'sub-9', startedAt: 1234 }
+      : undefined) })
+    expect(service.executionOf(task.key as string)).toEqual({ subagentId: 'sub-9', startedAt: 1234 })
+    expect(service.executions()[task.id]).toEqual({ subagentId: 'sub-9', startedAt: 1234 })
+  })
+})
+
 describe('export and import', () => {
   it('round-trips a board and keys keyless imported tasks', async () => {
     const source = build('auto')
