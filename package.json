@@ -64,12 +64,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/navidid/dsh-taskboard.git"
+    "url": "git+https://github.com/TaylorChen/dsh-taskboard.git"
   },
   "bugs": {
-    "url": "https://github.com/navidid/dsh-taskboard/issues"
+    "url": "https://github.com/TaylorChen/dsh-taskboard/issues"
   },
-  "homepage": "https://github.com/navidid/dsh-taskboard#readme",
+  "homepage": "https://github.com/TaylorChen/dsh-taskboard#readme",
   "keywords": [
     "dsh",
     "dsh-plugin",
