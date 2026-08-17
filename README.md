@@ -110,7 +110,7 @@ the revision it last read loses to any write that landed meanwhile
 (`revision-conflict`) instead of silently clobbering it. This is what makes
 parallel sessions on one board safe.
 
-### Tool parameters (v1.0)
+### Tool parameters
 
 | Parameter | Tools | Meaning |
 | --- | --- | --- |
@@ -119,9 +119,11 @@ parallel sessions on one board safe.
 | `definition_of_done` | `create`, `update` | Optional closing conditions |
 | `depends_on` | `create`, `update` | Prerequisite task ids/keys; claimable only when each is `done`/`cancelled` |
 | `budget_tokens` | `create`, `update` | Output-token cap for the executing subagent; `null` clears |
+| `context_budget_tokens` | `create`, `update` | Input-context cap for the dispatched subagent (v1.2); a dispatch whose estimated prompt overflows it is refused and the task settles `blocked`; `null` clears |
 | `executor` | `create`, `update` | `agent` / `human` / `any` (default). `human` tasks are never auto-claimed |
 | `due_at` | `create`, `update` | Planned deadline (epoch ms); auto-claim prefers earlier |
 | `note` / `notes` | `update` / `create` | Process note — `note` appends, never overwrites |
+| `priority` | `create` | `low` / `normal` / `high` / `urgent` (default `normal`); feeds auto-claim's weighted pick |
 | `status` | `create`, `update` | Board column (default `draft` unless criteria are given) |
 | `expected_revision` | `update`, `claim` | Optimistic-concurrency guard |
 | `reason` | `block` | Why the agent is stuck; required |
@@ -144,7 +146,8 @@ highlighting, and (v0.3) auto-claim:
 
 Moving into `blocked` requires a reason (use `task_block`); leaving `blocked`
 clears it. Blocking is an agent's report — the panel does not offer it as a
-move target, a human unblocks by moving the card anywhere else.
+move target; a human unblocks with the card's 解除阻碍 button (v1.3) or by
+moving the card anywhere else.
 
 ## Task specs (v0.5)
 
@@ -304,6 +307,10 @@ in your overlay:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `minRemainingTokens` | `8000` | Floor on `contextWindow − totalTokens` before the driver will claim |
+| `subagentProvider` | `spawn` | Provider name for the dispatched child session |
+| `dispatchTimeoutMs` | `1800000` | (v1.1) Dispose an over-running child and settle the task `blocked` |
+| `sessionContext` | `false` | (v0.8) Inject a digest of open work + related experience into a new session's first turn |
+| `sessionContextLimit` | `5` | (v0.8) Bound on the digest's open-tasks and experience cards each |
 
 Two notes. The claim itself is a system write and skips the approval prompt
 (it is the deployment's configured automation, not the model asking) —
@@ -354,7 +361,11 @@ Seven columns, one card per task, a priority accent, labels, and per-column
 counts. The `blocked` column and its cards are warning-tinted and show the
 blocking reason; since v1.2 the two columns waiting on you (`awaiting_human`
 and `blocked`) count in warning colour, cards waiting on a human wear the
-warning accent, and overdue cards float to the top of their column.
+warning accent, and overdue cards float to the top of their column. Later
+iterations added the header's project dropdown and glance-stats line (v1.4),
+drag-to-reorder in the 全部项目 view (v1.4), the 只看归档 toggle and card
+editing (v1.3), and the 解除阻碍 / 归档 / 归档全部 one-click actions
+(v1.2–v1.3).
 
 **You create and move tasks here directly** — no approval prompt, because you
 are the one asking. Each column has its own `+` that creates straight into that
