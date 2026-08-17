@@ -83,6 +83,8 @@ interface BoardTask {
   executor: 'agent' | 'human' | 'any'
   dueAt: number | null
   notes: string
+  /** v1.3 D1: archive stamp; the archive view shows only tasks with one. */
+  archivedAt: number | null
 }
 
 /** One project as the board route serves it. */
@@ -172,11 +174,22 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   // Bounce editor (v1.1 B1): which awaiting_human card is being bounced, and
   // the required reason.
   const [bounceDraft, setBounceDraft] = useState<{ taskId: string, reason: string } | null>(null)
+  // v1.3 D1: show the archive instead of the active board (archived tasks are
+  // done cards with an archivedAt stamp; restore is one click).
+  const [archivedView, setArchivedView] = useState(false)
+  // v1.3 D2: which card's inline editor is open, and the draft field values.
+  const [editDraft, setEditDraft] = useState<{
+    taskId: string, title: string, body: string, priority: string,
+    executor: 'agent' | 'human' | 'any', dueAt: string,
+  } | null>(null)
+  // v1.3 D4: two-step confirm for 归档全部 (first click arms, second fires).
+  const [archiveAllArmed, setArchiveAllArmed] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
     setBusy(true)
     try {
-      const response = await fetch('/api/taskboard/board')
+      // v1.3 D1: the archive is the same board, one query away.
+      const response = await fetch(`/api/taskboard/board${archivedView ? '?archived=true' : ''}`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       setBoard(await response.json() as BoardPayload)
       setError(undefined)
@@ -185,7 +198,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [archivedView])
 
   useEffect(() => { void load() }, [load])
 
@@ -281,6 +294,70 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     setBounceDraft(null)
   }, [bounceDraft, write])
 
+  /** v1.3 D2: save the card editor; empty deadline clears `dueAt`. */
+  const saveEdit = useCallback(async (task: BoardTask): Promise<void> => {
+    if (editDraft === null || editDraft.taskId !== task.id) return
+    const title = editDraft.title.trim()
+    if (title === '') return
+    await write(`/api/taskboard/task/${encodeURIComponent(task.id)}`, 'PATCH', {
+      title,
+      ...editDraft.body !== task.body ? { body: editDraft.body } : {},
+      priority: editDraft.priority,
+      executor: editDraft.executor,
+      ...editDraft.dueAt === '' ? { due_at: null } : { due_at: new Date(editDraft.dueAt).getTime() },
+      expectedRevision: task.revision,
+    })
+    setEditDraft(null)
+  }, [editDraft, write])
+
+  /** v1.3 D3: one click out of blocked — the server clears the reason. */
+  const unblock = useCallback(async (task: BoardTask): Promise<void> => {
+    await write(`/api/taskboard/task/${encodeURIComponent(task.id)}`, 'PATCH', {
+      status: 'open',
+      expectedRevision: task.revision,
+    })
+  }, [write])
+
+  /** v1.3 D4: sweep the whole done column, then reload. */
+  const archiveAllDone = useCallback(async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const response = await fetch('/api/taskboard/archive-done', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({})) as { error?: string }
+        throw new Error(detail.error ?? `HTTP ${response.status}`)
+      }
+      setError(undefined)
+      setArchiveAllArmed(false)
+      await load()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setBusy(false)
+    }
+  }, [load])
+
+  /** v1.3 D2: seed the editor from a card (epoch ms -> local datetime-local). */
+  const openEdit = useCallback((task: BoardTask): void => {
+    const pad = (value: number): string => String(value).padStart(2, '0')
+    const localInput = task.dueAt === null
+      ? ''
+      : (() => {
+        const d = new Date(task.dueAt as number)
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+      })()
+    setEditDraft({
+      taskId: task.id,
+      title: task.title,
+      body: task.body,
+      priority: task.priority,
+      executor: task.executor,
+      dueAt: localInput,
+    })
+  }, [])
+
   const projectName = (id: string): string =>
     board?.projects.find(project => project.id === id)?.name ?? id
 
@@ -316,6 +393,17 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <strong style={{ fontSize: 14 }}>{t('view.taskboard')}</strong>
         <span style={{ fontSize: 12, opacity: 0.6, flex: 1 }}>{t('hint')}</span>
+        {/* v1.3 D1: the archive is one query away — 归档 ≠ 删除, and the
+            toggle is how history comes back into view. */}
+        <button
+          type="button"
+          onClick={() => { setArchivedView(current => !current) }}
+          disabled={busy}
+          style={{ ...control, cursor: busy ? 'default' : 'pointer' }}
+          title={archivedView ? t('archive.active') : t('archive.view')}
+        >
+          {archivedView ? t('archive.active') : t('archive.view')}
+        </button>
         <button
           type="button"
           onClick={() => { void load() }}
@@ -373,6 +461,23 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         colour, bold — the badge is a call to action, not a
                         statistic. */}
                     <span style={attentionColumn ? { color: BLOCKED_TINT, fontWeight: 700 } : undefined}>{tasks.length}</span>
+                    {/* v1.3 D4: one click sweeps the done column (two-step to
+                        survive a stray click). */}
+                    {column === 'done' && !archivedView && (
+                      <button
+                        type="button"
+                        title={t('archive.all')}
+                        disabled={busy || tasks.length === 0}
+                        onClick={() => {
+                          if (!archiveAllArmed) { setArchiveAllArmed(true); return }
+                          void archiveAllDone()
+                        }}
+                        onBlur={() => { setArchiveAllArmed(false) }}
+                        style={{ ...control, padding: '1px 7px', cursor: busy || tasks.length === 0 ? 'default' : 'pointer', lineHeight: 1.4 }}
+                      >
+                        {archiveAllArmed ? t('archive.allConfirm') : t('archive.all')}
+                      </button>
+                    )}
                     {/* W5: create straight into this column. */}
                     <button
                       type="button"
@@ -621,6 +726,77 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           </div>
                         </div>
                       )}
+                      {/* v1.3 D1: the archive view stamps when it happened. */}
+                      {archivedView && task.archivedAt !== null && (
+                        <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>
+                          {t('archive.stamped')} {new Date(task.archivedAt).toLocaleDateString()}
+                        </div>
+                      )}
+                      {/* v1.3 D2: the card editor — title, body, priority,
+                          executor, deadline. Saving carries the read revision,
+                          so a concurrent change is a 409, not a clobber. */}
+                      {editDraft?.taskId === task.id && (
+                        <div style={{ ...surface, display: 'flex', flexDirection: 'column', gap: 6, padding: 8, marginBottom: 6 }}>
+                          <input
+                            autoFocus
+                            value={editDraft.title}
+                            placeholder={t('title')}
+                            onChange={event => { setEditDraft({ ...editDraft, title: event.target.value }) }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') setEditDraft(null)
+                            }}
+                            style={{ ...control, fontSize: 11 }}
+                          />
+                          <textarea
+                            value={editDraft.body}
+                            placeholder={t('edit.body')}
+                            rows={2}
+                            onChange={event => { setEditDraft({ ...editDraft, body: event.target.value }) }}
+                            style={{ ...control, fontSize: 11, resize: 'vertical', fontFamily: 'inherit' }}
+                          />
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <select
+                              value={editDraft.priority}
+                              onChange={event => { setEditDraft({ ...editDraft, priority: event.target.value }) }}
+                              style={{ ...control, fontSize: 11, flex: 1, cursor: 'pointer' }}
+                            >
+                              {PRIORITIES.map(priority => <option key={priority} value={priority}>{priority}</option>)}
+                            </select>
+                            <select
+                              value={editDraft.executor}
+                              onChange={event => { setEditDraft({ ...editDraft, executor: event.target.value as 'agent' | 'human' | 'any' }) }}
+                              style={{ ...control, fontSize: 11, flex: 1, cursor: 'pointer' }}
+                            >
+                              {(['agent', 'human', 'any'] as const).map(executor => (
+                                <option key={executor} value={executor}>{t(`executor.${executor}` as TaskboardKey)}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <input
+                            type="datetime-local"
+                            value={editDraft.dueAt}
+                            onChange={event => { setEditDraft({ ...editDraft, dueAt: event.target.value }) }}
+                            style={{ ...control, fontSize: 11 }}
+                          />
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => { void saveEdit(task) }}
+                              disabled={busy || editDraft.title.trim() === ''}
+                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', flex: 1 }}
+                            >
+                              {t('edit.save')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setEditDraft(null) }}
+                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                            >
+                              {t('cancel')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       {/* v1.1 A2: an in-progress task that is dispatched shows
                           which subagent is running it and for how long. */}
                       {task.status === 'in_progress' && board?.executions[task.id] !== undefined && (() => {
@@ -658,44 +834,88 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         </div>
                       )}
                       <div style={{ display: 'flex', gap: 6 }}>
-                        {/* Moving a card is a human write: it carries the read
-                            revision, so a concurrent agent edit wins and the
-                            server answers 409 instead of clobbering it. */}
-                        <select
-                          value={task.status}
-                          disabled={busy}
-                          onChange={(event) => {
-                            // Moving a draft task to open requires a complete
-                            // spec; instead of letting the server reject the
-                            // write, open the spec editor for that card.
-                            if (
-                              event.target.value === 'open'
-                              && task.spec !== null
-                              && task.spec.acceptanceCriteria.length > 0
-                            ) {
+                        {/* v1.3 D1: the archive is read-mostly — restore is
+                            the one move (the same governance write that
+                            archived it, flipped). */}
+                        {archivedView ? (
+                          <button
+                            type="button"
+                            onClick={() => {
                               void write(
                                 `/api/taskboard/task/${encodeURIComponent(task.id)}`,
                                 'PATCH',
-                                { status: event.target.value, expectedRevision: task.revision },
+                                { archived: false, expectedRevision: task.revision },
                               )
-                              return
-                            }
-                            if (event.target.value === 'open' && (task.spec === null || task.spec.acceptanceCriteria.length === 0)) {
-                              setSpecDraft({ taskId: task.id, criteria: (task.spec?.acceptanceCriteria ?? []).join('\n') })
-                              return
-                            }
-                            void write(
-                              `/api/taskboard/task/${encodeURIComponent(task.id)}`,
-                              'PATCH',
-                              { status: event.target.value, expectedRevision: task.revision },
-                            )
-                          }}
-                          style={{ ...control, fontSize: 11, flex: 1, cursor: 'pointer' }}
+                            }}
+                            style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', flex: 1 }}
+                          >
+                            {t('archive.restore')}
+                          </button>
+                        ) : (
+                          <>
+                            {/* Moving a card is a human write: it carries the read
+                                revision, so a concurrent agent edit wins and the
+                                server answers 409 instead of clobbering it. */}
+                            <select
+                              value={task.status}
+                              disabled={busy}
+                              onChange={(event) => {
+                                // Moving a draft task to open requires a complete
+                                // spec; instead of letting the server reject the
+                                // write, open the spec editor for that card.
+                                if (
+                                  event.target.value === 'open'
+                                  && task.spec !== null
+                                  && task.spec.acceptanceCriteria.length > 0
+                                ) {
+                                  void write(
+                                    `/api/taskboard/task/${encodeURIComponent(task.id)}`,
+                                    'PATCH',
+                                    { status: event.target.value, expectedRevision: task.revision },
+                                  )
+                                  return
+                                }
+                                if (event.target.value === 'open' && (task.spec === null || task.spec.acceptanceCriteria.length === 0)) {
+                                  setSpecDraft({ taskId: task.id, criteria: (task.spec?.acceptanceCriteria ?? []).join('\n') })
+                                  return
+                                }
+                                void write(
+                                  `/api/taskboard/task/${encodeURIComponent(task.id)}`,
+                                  'PATCH',
+                                  { status: event.target.value, expectedRevision: task.revision },
+                                )
+                              }}
+                              style={{ ...control, fontSize: 11, flex: 1, cursor: 'pointer' }}
+                            >
+                              {(task.status === 'blocked' ? ['blocked', ...MOVE_TARGETS] : MOVE_TARGETS).map(target => (
+                                <option key={target} value={target}>{t(`column.${target}` as TaskboardKey)}</option>
+                              ))}
+                            </select>
+                            {/* v1.3 D3: blocked is a state the agent reports;
+                                the human's exit is one explicit click. */}
+                            {task.status === 'blocked' && (
+                              <button
+                                type="button"
+                                onClick={() => { void unblock(task) }}
+                                disabled={busy}
+                                style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                                title={t('blocked.unblock')}
+                              >
+                                {t('blocked.unblock')}
+                              </button>
+                            )}
+                          </>
+                        )}
+                        {/* v1.3 D2: edit title/body/priority/executor/deadline
+                            without leaving the panel. */}
+                        <button
+                          type="button"
+                          onClick={() => { openEdit(task) }}
+                          style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                          title={t('edit.title')}
                         >
-                          {(task.status === 'blocked' ? ['blocked', ...MOVE_TARGETS] : MOVE_TARGETS).map(target => (
-                            <option key={target} value={target}>{t(`column.${target}` as TaskboardKey)}</option>
-                          ))}
-                        </select>
+                          {t('edit.title')}
+                        </button>
                         <button
                           type="button"
                           onClick={() => { void openActivity(task) }}
@@ -707,7 +927,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         {/* v1.2 C1: a done task is archive material, not board
                             clutter — archive it and it leaves the active view
                             (restoring is a governance write; see the service). */}
-                        {task.status === 'done' && (
+                        {!archivedView && task.status === 'done' && (
                           <button
                             type="button"
                             onClick={() => {

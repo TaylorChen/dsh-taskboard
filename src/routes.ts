@@ -91,6 +91,14 @@ export function apply(ctx: Context): void {
 
   route(`${BASE}/export`, 'exact', (_req, res) => json(res, 200, ctx.taskboard.exportAll()))
 
+  // v1.3 D4: one-click sweep of the done column — the panel's 归档全部 button.
+  // A governance write like single-task archiving: human-initiated, no approval.
+  route(`${BASE}/archive-done`, 'exact', async (req, res) => {
+    if (req.method !== 'POST') return json(res, 405, { error: 'use POST to archive all done tasks' })
+    const archived = await ctx.taskboard.archiveAllDone()
+    json(res, 200, { archived })
+  })
+
   // Create. POST so a link or an <img> can never reach it, and JSON-only so a
   // cross-origin form post cannot either.
   route(`${BASE}/task`, 'exact', async (req, res) => {
@@ -263,6 +271,8 @@ async function guard(res: ServerResponse, run: () => Promise<void>): Promise<voi
       'write-denied': 403,
       'unsupported-document': 400,
       'limit-exceeded': 409,
+      // v1.3 C2: another process rewrote the medium; reload and retry.
+      'concurrent-modification': 409,
     }[error.code]
     json(res, status, { error: error.message, code: error.code })
   }

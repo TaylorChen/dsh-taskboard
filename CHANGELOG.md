@@ -4,6 +4,38 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.3.0] — 2025-08-17
+
+Experience (from the v1.3 plan): cross-process writes stop silently losing
+data, and the panel gains the four exits that were missing.
+
+### Added
+
+- **Cross-process write safety (C2)**: the store's write guard re-reads the
+  JSON unit file before every durable write and refuses with
+  `concurrent-modification` (HTTP 409) when another process rewrote it —
+  stale-snapshot writes are detected, not silently clobbered (short-id
+  counter races included). Medium records are normalized through the domain
+  schemas (`.default()` fields), and fingerprints sort by canonical record
+  rather than table key, so a schema-normalized snapshot compares equal to a
+  raw older file. Guard is off when there is no readable JSON medium.
+- **Archive view (D1)**: the panel's 只看归档 toggle loads
+  `/board?archived=true`; archived cards get 恢复 — archiving is a round-trip.
+- **Card editing (D2)**: an inline editor on every card changes title, body,
+  priority, executor, and deadline, saved with `expectedRevision` (a racing
+  change is a 409, not a clobber).
+- **One-click unblock (D3)**: a blocked card gets 解除阻碍 (back to open).
+- **Archive all done (D4)**: `POST /api/taskboard/archive-done` sweeps the
+  done column; the done column's 归档全部 button (two-step confirm) calls it.
+- Real E2E: `tests/e2e/v13-c2.mjs` (service-level: stale write refused,
+  restored write lands) and `tests/e2e/v13-http.mjs` (route-level: archive
+  sweep, archived view + restore, edit PATCH, 409 on a hand-edited medium).
+
+### Migration
+
+None — additive (`dsh-home-paths` dependency, new route, panel additions); the
+write guard is off by construction when there is no readable JSON medium.
+
 ## [1.2.0] — 2025-08-17
 
 Governance (from the v1.2 plan): the board will fill up, the ball will wait on

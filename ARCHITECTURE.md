@@ -576,3 +576,41 @@ starting the child: the task settles `blocked` with a reason naming the
 refusal and a diagnosis quoting the estimate. A giant task is thus recognized
 as undispatchable instead of being launched into a truncated context. The
 estimate is a pure exported function so the formula is unit-tested directly.
+
+**43. v1.3 (C2): a stale-snapshot process is refused, not silently clobbered.**
+The JSON backend rewrites the whole unit file per write, and the domain's
+per-process write chain does not span processes — two processes on one home
+can overwrite each other (including short-id counter races). The store adapter
+therefore carries a write guard: before every durable write it reads the
+medium file and compares a canonical fingerprint of its state against the
+domain's in-memory snapshot. A divergence means another process rewrote the
+file; the write refuses with `concurrent-modification` (409 on the routes) —
+"refresh and retry" — instead of losing data. The medium side is normalized
+through the domain schemas first, because in-memory records carry `.default()`
+fields the raw file may predate; and fingerprints sort by canonical record,
+never by table key, because the domain's activity table is keyed by index, not
+by record id. Guard off when there is no readable JSON medium (fresh board,
+non-JSON backend); the read→write TOCTOU window that remains is the backend's
+last-writer-wins, out of this seam — the guard converts "always silently
+lost" into "detected unless exactly concurrent".
+
+**44. v1.3 (D1): the archive has an exit.** The panel's 只看归档 toggle loads
+`/board?archived=true`; archived cards (always done) get a 恢复 button that
+flips the same `archive(ref, false)` write. 归档 ≠ 删除 is now a visible
+round-trip, not a claim in the docs.
+
+**45. v1.3 (D2): the panel edits cards.** An inline editor on every card
+changes title, body, priority, executor, and deadline (datetime-local →
+epoch ms; empty clears `dueAt`). The PATCH carries `expectedRevision`, so an
+edit racing an agent write is a 409, not a clobber — the same optimistic
+concurrency as status moves.
+
+**46. v1.3 (D3): blocked has a one-click exit.** A blocked card shows 解除阻碍
+— a single PATCH to `open`; the service already clears `blockedReason` on
+leaving blocked, and the activity stream records the move. The reason stays
+visible on the card, so the unblock is informed.
+
+**47. v1.3 (D4): the done column sweeps in one click.** `POST
+/api/taskboard/archive-done` returns `{archived: n}` and the panel's done
+column header button (two-step: arm → confirm) calls it. This is the UI exit
+for the `archiveAllDone()` service method that v1.2 shipped without one.

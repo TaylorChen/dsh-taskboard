@@ -18,6 +18,11 @@ export type TaskboardErrorCode =
   | 'unsupported-document'
   /** A limit configured for this deployment was reached. */
   | 'limit-exceeded'
+  /**
+   * v1.3 C2: the medium was rewritten by another process since this process
+   * took its snapshot — reread (reload) and retry the write.
+   */
+  | 'concurrent-modification'
 
 /** One deliberate failure, carrying the code a caller switches on. */
 export class TaskboardError extends Error {

@@ -249,6 +249,24 @@ next task's context.
   estimate in the diagnosis. A giant task is recognized as undispatchable
   instead of launched into a truncated context.
 
+## Cross-process safety and panel experience (v1.3)
+
+- **Cross-process write safety.** Two processes sharing one `$DSH_HOME` (a GUI
+  plus a headless run) used to silently overwrite each other — the JSON backend
+  rewrites the whole file per write. Since v1.3 every write first compares the
+  storage file against the process's snapshot; if another process rewrote it,
+  the write is refused with **409 `concurrent-modification`** — "refresh and
+  retry" — instead of losing data. The guard is scoped to the JSON backend
+  (the shipped default); other backends are untouched.
+- **Archive view.** The header's **只看归档** toggle shows the archive; every
+  archived card gets **恢复** — 归档 is now a round-trip, not a one-way door.
+- **Card editing.** 编辑 on any card opens an inline editor for title,
+  description, priority, executor, and deadline — saved with the read revision,
+  so a racing change is a 409, not a clobber.
+- **One-click unblock.** A blocked card gets **解除阻碍** (back to 等待认领).
+- **Archive all done.** The done column's **归档全部** button sweeps the whole
+  column (`POST /api/taskboard/archive-done`), with a two-step confirm.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
@@ -357,6 +375,7 @@ further action.
 | POST | `/api/taskboard/task` | Create (human-initiated, no approval) |
 | PATCH | `/api/taskboard/task/<id\|key>` | Update; send `expectedRevision` to refuse a stale write |
 | PATCH | `/api/taskboard/task/<id\|key>` | Archive/restore: send `{ "archived": true\|false }` (v1.2) |
+| POST | `/api/taskboard/archive-done` | Sweep the whole done column; returns `{ "archived": n }` (v1.3) |
 
 Create/update also accept `context_budget_tokens` (input-context cap for the
 dispatched subagent; `null` clears it) since v1.2.

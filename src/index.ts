@@ -17,8 +17,10 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { existsSync, readFileSync } from 'node:fs'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TASKBOARD_DOMAIN, type Project } from './domain.ts'
-import { createStore, type TaskboardDomain } from './store.ts'
+import { createStore, type MediumGuard, type TaskboardDomain } from './store.ts'
 import { TaskboardService } from './service.ts'
 import { registerCommands } from './commands.ts'
 import {
@@ -99,7 +101,22 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // domains left open when it unmounts.
   ctx.effect(() => () => { void domain.close() }, 'dsh-taskboard.domain.close')
 
-  const store = createStore(domain)
+  // v1.3 C2: the cross-process write guard reads the JSON unit file directly —
+  // the same path the shipped profile config routes the domain to
+  // (`dshHomePath('storages')` + the domain's file). Absent file (fresh board
+  // or non-JSON backend) -> `null` -> the store disables the guard.
+  const mediumPath = dshHomePath('storages', 'taskboard.json')
+  const medium: MediumGuard = {
+    read: () => {
+      try {
+        return existsSync(mediumPath) ? readFileSync(mediumPath, 'utf8') : null
+      } catch {
+        return null
+      }
+    },
+  }
+
+  const store = createStore(domain, medium)
 
   const service = new TaskboardService({
     store,
