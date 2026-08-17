@@ -41,7 +41,10 @@ context), and the v0.9 intent fields (`executor`, `dueAt`, append-only
 
 No schema or behaviour changes from v0.9.1 — this tag marks the
 open-source-ready baseline: 91 unit/integration tests, 8 real E2E scripts, a
-34-check route matrix, and a clean sensitive-information audit.
+34-check route matrix, and a clean sensitive-information audit. Documentation
+covers a 5-minute quick start, a consolidated tool-parameter reference, a
+common-questions FAQ, and where the board data lives ($DSH_HOME/storages/
+taskboard.json, in-place upgrades, backup guidance).
 
 ## [0.9.1] — 2025-08-17
 
