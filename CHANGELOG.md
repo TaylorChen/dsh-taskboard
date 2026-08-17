@@ -28,6 +28,21 @@ starts feeding the next task.
 
 None — additive config only; the digest is opt-in.
 
+## [1.0.0] — 2025-08-17
+
+First stable release. The agent-native task board has been verified end to end
+across nine iterations (v0.1–v0.9): the execution layer (state machine, short
+ids, activity stream, approval gate), the spec layer (acceptance criteria as
+the gate to `open`), the verification loop (structured evidence, no
+half-evidence, failure diagnosis), scheduling (dependencies, weighted
+candidates, token budgets), the knowledge layer (experience cards, session
+context), and the v0.9 intent fields (`executor`, `dueAt`, append-only
+`notes`).
+
+No schema or behaviour changes from v0.9.1 — this tag marks the
+open-source-ready baseline: 91 unit/integration tests, 8 real E2E scripts, a
+34-check route matrix, and a clean sensitive-information audit.
+
 ## [0.9.1] — 2025-08-17
 
 Settlement-callback hardening (found by the full v0.9 E2E).
