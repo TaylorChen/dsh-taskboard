@@ -135,7 +135,10 @@ export function createStore(domain: TaskboardDomain, medium?: MediumGuard): Task
       return // unparseable file: leave the guard off rather than blocking writes
     }
     const mediumTables = mediumUnit.tables
-    if (mediumTables === undefined || mediumUnit.global === undefined) return
+    // `null` is the storage-domain library's documented "never written"
+    // sentinel for the global slot (a pre-v0.2 medium, or a fresh domain that
+    // has not yet had `global.set` durably applied) — not foreign state.
+    if (mediumTables === undefined || mediumUnit.global === undefined || mediumUnit.global === null) return
 
     const global = globalSchema.safeParse(mediumUnit.global)
     const tasks = normalizeTable(taskSchema, mediumTables.tasks ?? {})

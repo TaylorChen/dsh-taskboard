@@ -307,7 +307,7 @@ must have a defined no-registry fallback (no auto-assign, no scoping, panel
 shows no workspace name).
 
 **29. v0.4 Spike S4 (W2 pre-implementation): `ctx.subagents.start()` works
-end-to-end with a real model — the plan's risk is retired.** The V0.4 plan
+end-to-end with a real model — the plan's risk is retired.** The [V0.4 plan](docs/plans/V0.4实施计划文档.md)
 called for a 30-minute spike before building "claim → background subagent".
 It passed in a throwaway headless profile: a real agent invoked `task_subagent`
 (a `ctx.subagents.start()` caller), which created a child session whose own

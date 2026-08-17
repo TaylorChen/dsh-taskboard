@@ -145,6 +145,20 @@ describe('cross-process write guard (v1.3 C2)', () => {
     await expect(store.setGlobal({ nextTaskNumber: 9 })).resolves.toBeUndefined()
   })
 
+  it('lets the write through when the medium global is the storage-domain\'s null sentinel', async () => {
+    // A pre-v0.2 medium never had a global slot durably written: the
+    // storage-domain library serializes that as `global: null` (its own
+    // documented "never written" sentinel), not as foreign/unparseable state.
+    const record = task('a', 1)
+    const inMemory = new Map<string, Task>([['a', record]])
+    const domain = fakeDomain({ global: { nextTaskNumber: 1 }, tasks: inMemory })
+    const store = createStore(domain, {
+      read: () => serializeMedium(null, { tasks: { a: record }, projects: {}, activity: {} }),
+    })
+
+    await expect(store.putTask(task('a', 2))).resolves.toBeUndefined()
+  })
+
   it('disables the guard without a medium argument at all', async () => {
     const domain = fakeDomain({ global: { nextTaskNumber: 1 } })
     const store = createStore(domain)

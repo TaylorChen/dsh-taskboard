@@ -556,6 +556,11 @@ node tests/e2e/v14-http.mjs
 Unit tests (`pnpm run check`) cover the same contracts in-memory; the runners
 prove the process really boots and serves.
 
+Every version shipped with an implementation plan — the why, the design, the
+acceptance criteria, and the risk table that guided it. They are archived,
+one per version, under [`docs/plans/`](docs/plans/); the distilled decisions
+live in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) — it states exactly what this plugin can do on
