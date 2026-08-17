@@ -367,6 +367,32 @@ backend's reason to exist. For a large board, route this domain to SQLite:
       taskboard: sqlite
 ```
 
+## Where the board data lives
+
+The board persists through `ctx.storageDomain`, which routes to a backend under
+your dsh home. With the shipped `web` profile (JSON backend) the board is one
+file:
+
+```
+$DSH_HOME/storages/taskboard.json      # $DSH_HOME defaults to ~/.dsh
+```
+
+The file holds the unit header (`name` + `version`), the `global` slot (the
+short-id counter), and the `tables` — `tasks`, `projects`, and `activity`.
+The JSON backend rewrites the whole file atomically on every write (legible by
+design); for a large board, route the domain to SQLite instead (see "Scaling
+past a few hundred tasks").
+
+**Upgrades migrate in place, automatically.** v0.2 normalized stored statuses
+and backfilled `key`s, and the newer tables/global slot materialize on first
+mount — you do not export and re-import to upgrade. What you DO need is a
+backup before upgrading, because the storage layer never migrates *backward*:
+a board written by a newer version may not parse in an older one. See the next
+section.
+
+**Your data never ships with the plugin.** The board file lives in your dsh
+home; the npm package contains only code and docs.
+
 ## Backup, and why it ships in v1
 
 The storage layer has **no migration path**: a medium stamped with a different
