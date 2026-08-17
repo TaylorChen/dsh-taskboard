@@ -152,6 +152,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [activityError, setActivityError] = useState<string | undefined>(undefined)
   // Session liveness (W4): ids whose claiming session no longer exists.
   const [missingSessions, setMissingSessions] = useState<ReadonlySet<string>>(new Set())
+  // Spec editor (v1.0 UX fix): which draft card is collecting acceptance
+  // criteria, and the draft text (one criterion per line).
+  const [specDraft, setSpecDraft] = useState<{ taskId: string, criteria: string } | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     setBusy(true)
@@ -234,6 +237,19 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [activityTask])
+
+  /** Save the spec editor: one acceptance criterion per line, then the card
+   * may move to open. */
+  const saveSpec = useCallback(async (task: BoardTask): Promise<void> => {
+    if (specDraft === null || specDraft.taskId !== task.id) return
+    const criteria = specDraft.criteria.split('\n').map(line => line.trim()).filter(line => line !== '')
+    if (criteria.length === 0) return
+    await write(`/api/taskboard/task/${encodeURIComponent(task.id)}`, 'PATCH', {
+      acceptance_criteria: criteria,
+      expectedRevision: task.revision,
+    })
+    setSpecDraft(null)
+  }, [specDraft, write])
 
   const projectName = (id: string): string =>
     board?.projects.find(project => project.id === id)?.name ?? id
@@ -402,15 +418,58 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         </div>
                       )}
                       {/* v0.5: a draft task's spec completeness is the gate to
-                          open; surface what is missing so it can be completed. */}
-                      {task.status === 'draft' && task.spec === null && (
+                          open. The panel must offer the way to complete it —
+                          otherwise moving to open is guaranteed to fail. */}
+                      {task.status === 'draft' && (task.spec === null || task.spec.acceptanceCriteria.length === 0) && (
                         <div style={{ fontSize: 11, color: BLOCKED_TINT, marginBottom: 6 }}>
                           {t('spec.missingCriteria')}
                         </div>
                       )}
-                      {task.status === 'draft' && task.spec !== null && task.spec.acceptanceCriteria.length === 0 && (
-                        <div style={{ fontSize: 11, color: BLOCKED_TINT, marginBottom: 6 }}>
-                          {t('spec.missingCriteria')}
+                      {task.status === 'draft' && (task.spec === null || task.spec.acceptanceCriteria.length === 0)
+                        && specDraft?.taskId !== task.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSpecDraft({
+                              taskId: task.id,
+                              criteria: (task.spec?.acceptanceCriteria ?? []).join('\n'),
+                            })
+                          }}
+                          style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', marginBottom: 6 }}
+                        >
+                          {t('spec.addCriteria')}
+                        </button>
+                      )}
+                      {task.status === 'draft' && specDraft?.taskId === task.id && (
+                        <div style={{ ...surface, display: 'flex', flexDirection: 'column', gap: 6, padding: 8, marginBottom: 6 }}>
+                          <textarea
+                            autoFocus
+                            value={specDraft.criteria}
+                            placeholder={t('spec.criteriaPlaceholder')}
+                            onChange={event => { setSpecDraft({ taskId: task.id, criteria: event.target.value }) }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') setSpecDraft(null)
+                            }}
+                            rows={3}
+                            style={{ ...control, fontSize: 11, resize: 'vertical', fontFamily: 'inherit' }}
+                          />
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => { void saveSpec(task) }}
+                              disabled={busy || specDraft.criteria.trim() === ''}
+                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', flex: 1 }}
+                            >
+                              {t('spec.save')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setSpecDraft(null) }}
+                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                            >
+                              {t('cancel')}
+                            </button>
+                          </div>
                         </div>
                       )}
                       {task.status === 'draft' && task.spec !== null && task.spec.contextRefs.length === 0 && task.spec.acceptanceCriteria.length > 0 && (
@@ -513,6 +572,25 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           value={task.status}
                           disabled={busy}
                           onChange={(event) => {
+                            // Moving a draft task to open requires a complete
+                            // spec; instead of letting the server reject the
+                            // write, open the spec editor for that card.
+                            if (
+                              event.target.value === 'open'
+                              && task.spec !== null
+                              && task.spec.acceptanceCriteria.length > 0
+                            ) {
+                              void write(
+                                `/api/taskboard/task/${encodeURIComponent(task.id)}`,
+                                'PATCH',
+                                { status: event.target.value, expectedRevision: task.revision },
+                              )
+                              return
+                            }
+                            if (event.target.value === 'open' && (task.spec === null || task.spec.acceptanceCriteria.length === 0)) {
+                              setSpecDraft({ taskId: task.id, criteria: (task.spec?.acceptanceCriteria ?? []).join('\n') })
+                              return
+                            }
                             void write(
                               `/api/taskboard/task/${encodeURIComponent(task.id)}`,
                               'PATCH',
