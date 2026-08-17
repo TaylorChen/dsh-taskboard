@@ -232,59 +232,68 @@ export function apply(ctx: Context, config: Config): void {
           },
         })
         await ctx.taskboard.recordDispatched(claimed.id, agent.id, run.id)
+        // The settle runs after the child's turn — possibly long after this
+        // drive returns, even after the app starts closing. The whole callback
+        // is guarded so a settling child can never produce an unhandled
+        // rejection (e.g. `ctx.taskboard` read on an inactive context during
+        // shutdown); a failed settle is a logged warning, never a crash.
         void run.result.then(
-          (result) => {
-            if (result.stopReason === 'completed') {
-              const report = isTaskEvidence(result.structured)
-              if (report !== undefined) {
-                void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
-                  kind: 'completed',
-                  evidence: {
-                    criteria: report.criteria.map(entry => ({
-                      criterion: entry.criterion,
-                      met: entry.met,
-                      note: entry.note ?? '',
-                    })),
-                    artifacts: report.artifacts,
-                    summary: report.summary,
-                  },
-                }).catch(error => ctx.logger.warn(
-                  `taskboard-autoclaim: could not settle dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
-                ))
+          async (result) => {
+            try {
+              if (result.stopReason === 'completed') {
+                const report = isTaskEvidence(result.structured)
+                if (report !== undefined) {
+                  await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+                    kind: 'completed',
+                    evidence: {
+                      criteria: report.criteria.map(entry => ({
+                        criterion: entry.criterion,
+                        met: entry.met,
+                        note: entry.note ?? '',
+                      })),
+                      artifacts: report.artifacts,
+                      summary: report.summary,
+                    },
+                  })
+                  return
+                }
+                // No valid structured capture: no half-evidence — settle as error.
+                await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+                  kind: 'error',
+                  reason: `subagent ${run.id} finished without a structured report`,
+                  diagnosis: tailOf(result.output),
+                })
                 return
               }
-              // No valid structured capture: no half-evidence — settle as error.
-              void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+              // v0.7 W3: a child that hit its token ceiling is a budget
+              // overrun, reported distinctly from a plain failure.
+              const budgetOverrun = result.stopReason === 'max-tokens'
+              await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
                 kind: 'error',
-                reason: `subagent ${run.id} finished without a structured report`,
+                reason: budgetOverrun
+                  ? `subagent ${run.id} exceeded the task's token budget`
+                  : `subagent ${run.id} ended with ${result.stopReason}`,
                 diagnosis: tailOf(result.output),
-              }).catch(failure => ctx.logger.warn(
-                `taskboard-autoclaim: could not settle missing-report dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
-              ))
-              return
+              })
+            } catch (error) {
+              ctx.logger.warn(
+                `taskboard-autoclaim: could not settle dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
+              )
             }
-            // v0.7 W3: a child that hit its token ceiling is a budget
-            // overrun, reported distinctly from a plain failure.
-            const budgetOverrun = result.stopReason === 'max-tokens'
-            void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
-              kind: 'error',
-              reason: budgetOverrun
-                ? `subagent ${run.id} exceeded the task's token budget`
-                : `subagent ${run.id} ended with ${result.stopReason}`,
-              diagnosis: tailOf(result.output),
-            }).catch(error => ctx.logger.warn(
-              `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
-            ))
           },
-          (error) => {
+          async (error) => {
             // `run.result` rejects only on an infrastructure fault.
-            void ctx.taskboard.settleDispatch(claimed.id, agent.id, {
-              kind: 'error',
-              reason: `subagent ${run.id} failed to run`,
-              diagnosis: renderThrown(error),
-            }).catch(failure => ctx.logger.warn(
-              `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
-            ))
+            try {
+              await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+                kind: 'error',
+                reason: `subagent ${run.id} failed to run`,
+                diagnosis: renderThrown(error),
+              })
+            } catch (failure) {
+              ctx.logger.warn(
+                `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
+              )
+            }
           },
         )
         return

@@ -28,6 +28,21 @@ starts feeding the next task.
 
 None — additive config only; the digest is opt-in.
 
+## [0.9.1] — 2025-08-17
+
+Settlement-callback hardening (found by the full v0.9 E2E).
+
+### Fixed
+
+- The auto-claim dispatch's settle callback ran `ctx.taskboard` reads after
+  the app began closing (a child settling post-shutdown), throwing a
+  synchronous "inactive context" error that became an unhandled promise
+  rejection and could kill the process. The whole settle path is now an
+  async-guarded callback: a failed settle is a logged warning, never a crash.
+- Added `tests/e2e/v09-full.mjs`: one real-process E2E covering executor
+  filtering, dueAt scheduling, and a model-appended note (with a `noted`
+  activity entry) — all passing.
+
 ## [0.9.0] — 2025-08-17
 
 Executor intent, deadlines, and append-only notes.
