@@ -4,6 +4,24 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.4.1] — 2025-08-17
+
+Task editing moved out of the card into a centered modal (a 160px column is no
+place for a form).
+
+### Changed
+
+- **Edit modal**: the card's inline editor is replaced by a centered 520px
+  modal (glass styling, `role="dialog"` + `aria-modal`) with a semi-transparent
+  backdrop; header shows 编辑 <key> plus project · status; the description
+  textarea grows to six rows. Backdrop click or Escape closes; saving keeps
+  the `expectedRevision` optimistic-concurrency guard (a racing change stays a
+  409).
+
+### Migration
+
+None — panel-only change.
+
 ## [1.4.0] — 2025-08-17
 
 Board usability (from the v1.4 plan): projects get focus, the board gets a

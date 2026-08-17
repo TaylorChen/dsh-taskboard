@@ -278,6 +278,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [activityTask])
 
+  /** Escape closes the edit modal (v1.4.1), wherever focus is. */
+  useEffect(() => {
+    if (editDraft === null) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setEditDraft(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [editDraft])
+
   /** Save the spec editor: one acceptance criterion per line, then the card
    * may move to open. */
   const saveSpec = useCallback(async (task: BoardTask): Promise<void> => {
@@ -816,71 +826,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           {t('archive.stamped')} {new Date(task.archivedAt).toLocaleDateString()}
                         </div>
                       )}
-                      {/* v1.3 D2: the card editor — title, body, priority,
-                          executor, deadline. Saving carries the read revision,
-                          so a concurrent change is a 409, not a clobber. */}
-                      {editDraft?.taskId === task.id && (
-                        <div style={{ ...surface, display: 'flex', flexDirection: 'column', gap: 6, padding: 8, marginBottom: 6 }}>
-                          <input
-                            autoFocus
-                            value={editDraft.title}
-                            placeholder={t('title')}
-                            onChange={event => { setEditDraft({ ...editDraft, title: event.target.value }) }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Escape') setEditDraft(null)
-                            }}
-                            style={{ ...control, fontSize: 11 }}
-                          />
-                          <textarea
-                            value={editDraft.body}
-                            placeholder={t('edit.body')}
-                            rows={2}
-                            onChange={event => { setEditDraft({ ...editDraft, body: event.target.value }) }}
-                            style={{ ...control, fontSize: 11, resize: 'vertical', fontFamily: 'inherit' }}
-                          />
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <select
-                              value={editDraft.priority}
-                              onChange={event => { setEditDraft({ ...editDraft, priority: event.target.value }) }}
-                              style={{ ...control, fontSize: 11, flex: 1, cursor: 'pointer' }}
-                            >
-                              {PRIORITIES.map(priority => <option key={priority} value={priority}>{priority}</option>)}
-                            </select>
-                            <select
-                              value={editDraft.executor}
-                              onChange={event => { setEditDraft({ ...editDraft, executor: event.target.value as 'agent' | 'human' | 'any' }) }}
-                              style={{ ...control, fontSize: 11, flex: 1, cursor: 'pointer' }}
-                            >
-                              {(['agent', 'human', 'any'] as const).map(executor => (
-                                <option key={executor} value={executor}>{t(`executor.${executor}` as TaskboardKey)}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <input
-                            type="datetime-local"
-                            value={editDraft.dueAt}
-                            onChange={event => { setEditDraft({ ...editDraft, dueAt: event.target.value }) }}
-                            style={{ ...control, fontSize: 11 }}
-                          />
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button
-                              type="button"
-                              onClick={() => { void saveEdit(task) }}
-                              disabled={busy || editDraft.title.trim() === ''}
-                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', flex: 1 }}
-                            >
-                              {t('edit.save')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => { setEditDraft(null) }}
-                              style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
-                            >
-                              {t('cancel')}
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                      {/* v1.4.1: the card editor moved OUT of the card into a
+                          centered modal (see the overlay near the bottom) —
+                          a 160px column is no place for a form. */}
                       {/* v1.1 A2: an in-progress task that is dispatched shows
                           which subagent is running it and for how long. */}
                       {task.status === 'in_progress' && board?.executions[task.id] !== undefined && (() => {
@@ -1099,6 +1047,123 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
           </div>
         </>
       )}
+
+      {/* v1.4.1: the card editor as a centered modal — a 160px column is no
+          place for a form. Backdrop click or Escape closes; saving carries
+          the read revision, so a concurrent change is a 409, not a clobber. */}
+      {editDraft !== null && (() => {
+        const editingTask = board?.tasks.find(task => task.id === editDraft.taskId)
+        if (editingTask === undefined) return null
+        return (
+          <>
+            <div
+              onClick={() => { setEditDraft(null) }}
+              style={{ position: 'absolute', inset: 0, zIndex: 30, background: 'color-mix(in oklab, currentColor 18%, transparent)', backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)' }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={`${t('edit.title')} ${editingTask.key ?? editingTask.id}`}
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: 520,
+                maxWidth: 'calc(100% - 32px)',
+                maxHeight: '85%',
+                overflowY: 'auto',
+                zIndex: 31,
+                background: 'color-mix(in oklab, currentColor 12%, transparent)',
+                backdropFilter: 'blur(16px) saturate(1.3)',
+                WebkitBackdropFilter: 'blur(16px) saturate(1.3)',
+                border: '1px solid color-mix(in oklab, currentColor 18%, transparent)',
+                borderRadius: 10,
+                boxShadow: '0 16px 48px color-mix(in oklab, currentColor 25%, transparent)',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, borderBottom: '1px solid color-mix(in oklab, currentColor 12%, transparent)' }}>
+                <strong style={{ fontSize: 13, flex: 1 }}>
+                  {t('edit.title')} {editingTask.key ?? editingTask.id.slice(0, 8)}
+                </strong>
+                <span style={{ fontSize: 11, opacity: 0.6 }}>
+                  {projectName(editingTask.projectId)} · {t(`column.${editingTask.status}` as TaskboardKey)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setEditDraft(null) }}
+                  style={{ ...control, cursor: 'pointer' }}
+                  title={t('cancel')}
+                >
+                  ×
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
+                <input
+                  autoFocus
+                  value={editDraft.title}
+                  placeholder={t('title')}
+                  onChange={event => { setEditDraft({ ...editDraft, title: event.target.value }) }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') setEditDraft(null)
+                  }}
+                  style={{ ...control, fontSize: 13 }}
+                />
+                <textarea
+                  value={editDraft.body}
+                  placeholder={t('edit.body')}
+                  rows={6}
+                  onChange={event => { setEditDraft({ ...editDraft, body: event.target.value }) }}
+                  style={{ ...control, fontSize: 12, resize: 'vertical', fontFamily: 'inherit' }}
+                />
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <select
+                    value={editDraft.priority}
+                    onChange={event => { setEditDraft({ ...editDraft, priority: event.target.value }) }}
+                    style={{ ...control, fontSize: 12, flex: 1, cursor: 'pointer' }}
+                  >
+                    {PRIORITIES.map(priority => <option key={priority} value={priority}>{priority}</option>)}
+                  </select>
+                  <select
+                    value={editDraft.executor}
+                    onChange={event => { setEditDraft({ ...editDraft, executor: event.target.value as 'agent' | 'human' | 'any' }) }}
+                    style={{ ...control, fontSize: 12, flex: 1, cursor: 'pointer' }}
+                  >
+                    {(['agent', 'human', 'any'] as const).map(executor => (
+                      <option key={executor} value={executor}>{t(`executor.${executor}` as TaskboardKey)}</option>
+                    ))}
+                  </select>
+                </div>
+                <input
+                  type="datetime-local"
+                  value={editDraft.dueAt}
+                  onChange={event => { setEditDraft({ ...editDraft, dueAt: event.target.value }) }}
+                  style={{ ...control, fontSize: 12 }}
+                />
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => { void saveEdit(editingTask) }}
+                    disabled={busy || editDraft.title.trim() === ''}
+                    style={{ ...control, fontSize: 13, padding: '6px 12px', cursor: 'pointer', flex: 1 }}
+                  >
+                    {t('edit.save')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setEditDraft(null) }}
+                    style={{ ...control, fontSize: 13, padding: '6px 12px', cursor: 'pointer' }}
+                  >
+                    {t('cancel')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        )
+      })()}
     </div>
   )
 }
