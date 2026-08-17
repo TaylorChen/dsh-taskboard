@@ -67,12 +67,16 @@ export function apply(ctx: Context): void {
   route(`${BASE}/board`, 'exact', (req, res) => {
     const url = new URL(req.url ?? '', 'http://localhost')
     const status = url.searchParams.get('status') ?? undefined
+    const archived = url.searchParams.get('archived') === 'true'
     if (status !== undefined && !isStatus(status)) {
       return json(res, 400, { error: `unknown status '${status}'` })
     }
     return json(res, 200, {
       projects: ctx.taskboard.projects(),
-      tasks: ctx.taskboard.list(status === undefined ? {} : { status }),
+      tasks: ctx.taskboard.list({
+        ...status === undefined ? {} : { status },
+        ...archived ? { archived: true } : {},
+      }),
       // v0.4 W1: workspace id -> display title, so the panel can name a
       // task's workspace without knowing the registry itself.
       workspaces: ctx.workspaceRegistry.list().map(workspace => ({
@@ -122,6 +126,8 @@ export function apply(ctx: Context): void {
         ...isExecutor(input.executor) ? { executor: input.executor } : {},
         ...typeof input.due_at === 'number' ? { dueAt: input.due_at } : {},
         ...typeof input.notes === 'string' ? { notes: input.notes } : {},
+        ...typeof input.context_budget_tokens === 'number'
+          ? { contextBudgetTokens: input.context_budget_tokens } : {},
       }, PANEL)
       json(res, 201, task)
     })
@@ -161,6 +167,11 @@ export function apply(ctx: Context): void {
       const input = body as Record<string, unknown>
       const status = isStatus(input.status) ? input.status : undefined
       const priority = isPriority(input.priority) ? input.priority : undefined
+      // v1.2 C1: archiving is a governance write, not a field patch.
+      if (typeof input.archived === 'boolean') {
+        const archivedTask = await ctx.taskboard.archive(tail, input.archived)
+        return json(res, 200, archivedTask)
+      }
       const spec = {
         ...Array.isArray(input.acceptance_criteria)
           ? { acceptanceCriteria: input.acceptance_criteria as string[] } : {},
@@ -183,6 +194,8 @@ export function apply(ctx: Context): void {
         ...isExecutor(input.executor) ? { executor: input.executor } : {},
         ...typeof input.due_at === 'number' ? { dueAt: input.due_at } : {},
         ...typeof input.note === 'string' ? { note: input.note } : {},
+        ...typeof input.context_budget_tokens === 'number'
+          ? { contextBudgetTokens: input.context_budget_tokens } : {},
         ...typeof input.expectedRevision === 'number'
           ? { expectedRevision: input.expectedRevision }
           : {},

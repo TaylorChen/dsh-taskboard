@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { apply } from '../src/autoclaim.ts'
+import { apply, estimateInputTokens } from '../src/autoclaim.ts'
 import { TaskboardService, type Actor, type TaskboardStore } from '../src/service.ts'
 import type { Activity, Task, Project, ProjectId, TaskId } from '../src/domain.ts'
 
@@ -468,5 +468,50 @@ describe('auto-claim driver', () => {
     expect(settled?.blockedReason).toContain('execution timed out')
     expect(settled?.evidence?.summary).toContain('exceeded 20 ms')
     expect(subagents.disposed()).toBe(1)
+  })
+
+  it('refuses a dispatch whose prompt exceeds the context budget and settles blocked (v1.2 B2)', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    await service.create({
+      projectId: PROJECT_ID,
+      title: 'Huge',
+      acceptanceCriteria: ['big'],
+      contextBudgetTokens: 10, // any dispatch prompt is far larger than 10 tokens
+    }, actor)
+
+    emitIdle()
+    await settle()
+
+    // Refused BEFORE the seam: no subagent was ever started.
+    expect(subagents.starts).toHaveLength(0)
+    const settled = service.list({ status: 'blocked' })[0]
+    expect(settled?.blockedReason).toContain('over budget')
+    expect(settled?.evidence?.summary).toContain('estimated')
+  })
+
+  it('dispatches normally when the prompt fits the context budget (v1.2 B2)', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Fits',
+      acceptanceCriteria: ['ok'],
+      contextBudgetTokens: 1_000_000,
+    }, actor)
+
+    emitIdle()
+    await settle()
+
+    expect(subagents.starts).toHaveLength(1)
+    expect(service.get(task.key as string)?.status).toBe('in_progress')
+  })
+})
+
+describe('input-context estimate (v1.2 B2)', () => {
+  it('approximates tokens as ceil(chars / 4)', () => {
+    expect(estimateInputTokens('')).toBe(0)
+    expect(estimateInputTokens('a')).toBe(1)
+    expect(estimateInputTokens('abcd')).toBe(1)
+    expect(estimateInputTokens('abcde')).toBe(2)
+    expect(estimateInputTokens('x'.repeat(4000))).toBe(1000)
   })
 })

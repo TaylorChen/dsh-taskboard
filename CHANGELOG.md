@@ -4,6 +4,37 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.2.0] — 2025-08-17
+
+Governance (from the v1.2 plan): the board will fill up, the ball will wait on
+a person, and cost can run away — these three get an exit.
+
+### Added
+
+- **Soft archive (C1)**: `archivedAt` stamp on done tasks; `list()` and
+  `/board` exclude archived by default, `?archived=true` queries the archive,
+  `archive(ref, archived)` archives and restores, `archiveAllDone()` sweeps the
+  done column. Only `done` tasks archive; export keeps archived tasks (an
+  archive is never a deletion). The done card gets an **归档** button.
+- **Ball-to-human highlight (B3)**: `awaiting_human`/`blocked` column counts
+  render in warning colour and bold; cards waiting on a human wear the warning
+  accent; overdue cards float to the top of their column (panel-side sort,
+  storage order untouched).
+- **Context budget (B2)**: `context_budget_tokens` caps the dispatched
+  subagent's INPUT context; at dispatch the driver estimates the prompt cost
+  (`estimateInputTokens = ceil(chars/4)`, a deliberate ceiling) and refuses —
+  settling the task `blocked` with the estimate in the diagnosis — instead of
+  launching a doomed run. Tools and routes pass `context_budget_tokens`
+  through.
+- Real E2E (`tests/e2e/v12-governance.mjs`): archived task leaves the active
+  board and restores; an over-budget task settles blocked with no subagent
+  ever registered.
+
+### Migration
+
+None — additive fields (`archivedAt`, `contextBudgetTokens`) with `.default()`,
+plus panel-side sorting.
+
 ## [0.8.0] — 2025-08-17
 
 Knowledge layer (ROADMAP L5): the board's history stops being an archive and

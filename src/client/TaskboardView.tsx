@@ -46,6 +46,18 @@ const PRIORITY_TINT: Record<string, string> = {
 /** Warning accent for the blocked column. */
 const BLOCKED_TINT = 'color-mix(in oklab, #e5484d 65%, currentColor)'
 
+/** v1.2 B3: the "ball is with a human" accent — awaiting_human and blocked
+ * cards/counts share the warning colour, so the one column a human must act
+ * on stands out from the work-in-flight columns. */
+const ATTENTION_TINT = BLOCKED_TINT
+
+/**
+ * v1.2 B3: a card "awaiting a human" ranks first when its deadline is already
+ * past — the panel orders by who must act, not by storage order.
+ */
+const overdueRank = (task: BoardTask, now: number): number =>
+  task.dueAt !== null && task.dueAt < now ? 0 : 1
+
 /** One task as the board route serves it. */
 interface BoardTask {
   id: string
@@ -295,6 +307,10 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     }
   }
 
+  // v1.2 B3: one clock for the whole render, so the overdue-top sort and the
+  // per-card overdue badge cannot disagree with each other.
+  const now = Date.now()
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, height: '100%', overflow: 'hidden', position: 'relative' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -323,8 +339,15 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       {board !== undefined && board.tasks.length > 0 && (
         <div style={{ display: 'flex', gap: 12, overflowX: 'auto', flex: 1, alignItems: 'flex-start' }}>
           {COLUMNS.map((column) => {
-            const tasks = board.tasks.filter(task => task.status === column)
+            // v1.2 B3: overdue cards float to the top of their column (stable
+            // sort keeps the storage order for everything else).
+            const tasks = board.tasks
+              .filter(task => task.status === column)
+              .sort((a, b) => overdueRank(a, now) - overdueRank(b, now))
             const blockedColumn = column === 'blocked'
+            // v1.2 B3: the two columns whose ball is with a HUMAN get the
+            // warning accent, so the count says "you must act".
+            const attentionColumn = column === 'awaiting_human' || blockedColumn
             const composingHere = composingIn === column
             return (
               // `minWidth` is the shrink floor, not a target: seven columns
@@ -346,7 +369,10 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                     {t(`column.${column}` as TaskboardKey)}
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span>{tasks.length}</span>
+                    {/* v1.2 B3: the "waiting on you" columns count in warning
+                        colour, bold — the badge is a call to action, not a
+                        statistic. */}
+                    <span style={attentionColumn ? { color: BLOCKED_TINT, fontWeight: 700 } : undefined}>{tasks.length}</span>
                     {/* W5: create straight into this column. */}
                     <button
                       type="button"
@@ -404,7 +430,14 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         ...surface,
                         background: 'color-mix(in oklab, currentColor 7%, transparent)',
                         padding: 10,
-                        borderLeft: `3px solid ${PRIORITY_TINT[task.priority] ?? PRIORITY_TINT.normal}`,
+                        borderLeft: `3px solid ${
+                          // v1.2 B3: a card waiting on a human gets the warning
+                          // accent (blocked cards already paint all borders red
+                          // via the column tint below).
+                          task.status === 'awaiting_human'
+                            ? ATTENTION_TINT
+                            : (PRIORITY_TINT[task.priority] ?? PRIORITY_TINT.normal)
+                        }`,
                         ...blockedColumn ? { borderColor: 'color-mix(in oklab, #e5484d 55%, transparent)' } : {},
                       }}
                     >
@@ -417,8 +450,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         )}
                         <span>· {t(`executor.${task.executor}` as TaskboardKey)}</span>
                         {task.dueAt !== null && (
-                          <span style={{ color: task.dueAt < Date.now() ? BLOCKED_TINT : undefined }}>
-                            · {task.dueAt < Date.now() ? t('due.overdue') : new Date(task.dueAt).toLocaleDateString()}
+                          <span style={{ color: task.dueAt < now ? BLOCKED_TINT : undefined }}>
+                            · {task.dueAt < now ? t('due.overdue') : new Date(task.dueAt).toLocaleDateString()}
                           </span>
                         )}
                         <span>· {task.priority}</span>
@@ -596,7 +629,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
                             {t('execution.running')} · {sessionShort(execution.subagentId)}
                             {' · '}
-                            {Math.max(1, Math.round((Date.now() - execution.startedAt) / 60_000))}{t('execution.minutes')}
+                            {Math.max(1, Math.round((now - execution.startedAt) / 60_000))}{t('execution.minutes')}
                           </div>
                         )
                       })()}
@@ -671,6 +704,25 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         >
                           {t('activity.title')}
                         </button>
+                        {/* v1.2 C1: a done task is archive material, not board
+                            clutter — archive it and it leaves the active view
+                            (restoring is a governance write; see the service). */}
+                        {task.status === 'done' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void write(
+                                `/api/taskboard/task/${encodeURIComponent(task.id)}`,
+                                'PATCH',
+                                { archived: true, expectedRevision: task.revision },
+                              )
+                            }}
+                            style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                            title={t('archive.done')}
+                          >
+                            {t('archive.done')}
+                          </button>
+                        )}
                       </div>
                     </article>
                   ))}

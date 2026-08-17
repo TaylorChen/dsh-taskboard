@@ -230,6 +230,25 @@ next task's context.
 - **Bounce reasons.** 打回待立项 now asks why — the reason lands in the task
   notes and the activity stream, so the next executor knows what to change.
 
+## Governance: archive, ball-to-human highlight, context budget (v1.2)
+
+- **Archive.** A done card gets an **归档** button. Archiving is a soft
+  archive — `archivedAt` is stamped, the task leaves the active board, but it
+  is never deleted: `GET /api/taskboard/board?archived=true` and the export
+  still see it, and the same write with `archived: false` restores it. Only
+  `done` tasks can be archived.
+- **Ball-to-human highlight.** The two columns that wait on YOU —
+  `awaiting_human` and `blocked` — count in warning colour and bold, and cards
+  waiting on a human get the warning accent. Within a column, overdue cards
+  float to the top.
+- **Context budget.** `context_budget_tokens` caps the subagent's INPUT
+  context (`budget_tokens` caps its output). When the auto-claim driver
+  estimates that the dispatch prompt would overflow the budget
+  (`ceil(chars / 4)` — a deliberately strict ceiling), it refuses **before
+  starting the child** and settles the task 遇到阻碍 (`blocked`) with the
+  estimate in the diagnosis. A giant task is recognized as undispatchable
+  instead of launched into a truncated context.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
@@ -303,7 +322,9 @@ initiator rather than the surface — they just are not built yet.)
 Open any session and the board is the third view tab, beside 对话 and 轨迹.
 Seven columns, one card per task, a priority accent, labels, and per-column
 counts. The `blocked` column and its cards are warning-tinted and show the
-blocking reason.
+blocking reason; since v1.2 the two columns waiting on you (`awaiting_human`
+and `blocked`) count in warning colour, cards waiting on a human wear the
+warning accent, and overdue cards float to the top of their column.
 
 **You create and move tasks here directly** — no approval prompt, because you
 are the one asking. Each column has its own `+` that creates straight into that
@@ -329,12 +350,16 @@ further action.
 
 | Method | Path | Effect |
 | --- | --- | --- |
-| GET | `/api/taskboard/board?status=…` | Read the board |
+| GET | `/api/taskboard/board?status=…&archived=true` | Read the board (archived tasks only when `archived=true`) |
 | GET | `/api/taskboard/task/<id\|key>` | Read one task |
 | GET | `/api/taskboard/task/<id\|key>/activity` | One task's activity stream, newest first |
-| GET | `/api/taskboard/export` | Backup document |
+| GET | `/api/taskboard/export` | Backup document (includes archived) |
 | POST | `/api/taskboard/task` | Create (human-initiated, no approval) |
 | PATCH | `/api/taskboard/task/<id\|key>` | Update; send `expectedRevision` to refuse a stale write |
+| PATCH | `/api/taskboard/task/<id\|key>` | Archive/restore: send `{ "archived": true\|false }` (v1.2) |
+
+Create/update also accept `context_budget_tokens` (input-context cap for the
+dispatched subagent; `null` clears it) since v1.2.
 
 Registered on the host's existing web server; no new port. **Writes require
 `content-type: application/json`** — see [SECURITY.md](SECURITY.md) for why.

@@ -335,6 +335,8 @@ describe('short ids', () => {
         executor: 'any',
         dueAt: null,
         notes: '',
+        archivedAt: null,
+        contextBudgetTokens: null,
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -532,6 +534,8 @@ describe('auto-claim', () => {
       executor: 'any',
       dueAt: null,
       notes: '',
+      archivedAt: null,
+      contextBudgetTokens: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -703,6 +707,8 @@ describe('task spec (v0.5 L2)', () => {
       executor: 'any',
       dueAt: null,
       notes: '',
+      archivedAt: null,
+      contextBudgetTokens: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -947,6 +953,70 @@ describe('execution visibility (v1.1 A2)', () => {
       : undefined) })
     expect(service.executionOf(task.key as string)).toEqual({ subagentId: 'sub-9', startedAt: 1234 })
     expect(service.executions()[task.id]).toEqual({ subagentId: 'sub-9', startedAt: 1234 })
+  })
+})
+
+describe('archive (v1.2 C1)', () => {
+  it('hides a done task from the active board, filters it in, and restores it', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Finished', acceptanceCriteria: ['done'] }, actor)
+    const settled = await service.update(task.key as string, { status: 'done' }, actor)
+    expect(settled.archivedAt).toBeNull()
+
+    const archived = await service.archive(settled.key as string, true)
+    expect(archived.archivedAt).not.toBeNull()
+    expect(service.list()).toHaveLength(0)
+    expect(service.list({ archived: true }).map(entry => entry.id)).toContain(settled.id)
+
+    const restored = await service.archive(archived.key as string, false)
+    expect(restored.archivedAt).toBeNull()
+    expect(service.list().map(entry => entry.id)).toContain(settled.id)
+  })
+
+  it('refuses to archive a task that is not done', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Open', acceptanceCriteria: ['o'] }, actor)
+    await expect(service.archive(task.key as string, true))
+      .rejects.toThrow(/only done tasks/)
+  })
+
+  it('archives every done task with archiveAllDone and skips the rest', async () => {
+    const { service, actor } = build('auto')
+    const first = await service.create({ projectId: PROJECT_ID, title: 'A', acceptanceCriteria: ['a'] }, actor)
+    const second = await service.create({ projectId: PROJECT_ID, title: 'B', acceptanceCriteria: ['b'] }, actor)
+    const open = await service.create({ projectId: PROJECT_ID, title: 'C', acceptanceCriteria: ['c'] }, actor)
+    await service.update(first.key as string, { status: 'done' }, actor)
+    await service.update(second.key as string, { status: 'done' }, actor)
+
+    expect(await service.archiveAllDone()).toBe(2)
+    expect(service.list({ archived: true })).toHaveLength(2)
+    expect(service.list()).toHaveLength(1)
+    expect(service.list()[0]?.id).toBe(open.id)
+  })
+
+  it('keeps archived tasks in the export (backup completeness)', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Gone', acceptanceCriteria: ['g'] }, actor)
+    await service.update(task.key as string, { status: 'done' }, actor)
+    await service.archive(task.key as string, true)
+
+    const doc = service.exportAll()
+    expect(doc.tasks.some(entry => entry.id === task.id && entry.archivedAt !== null)).toBe(true)
+  })
+})
+
+describe('context budget (v1.2 B2)', () => {
+  it('stores the input-context budget and clears it with null', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Budgeted', acceptanceCriteria: ['b'], contextBudgetTokens: 4000 }, actor)
+    expect(task.contextBudgetTokens).toBe(4000)
+
+    const cleared = await service.update(task.key as string, { contextBudgetTokens: null }, actor)
+    expect(cleared.contextBudgetTokens).toBeNull()
   })
 })
 

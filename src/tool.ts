@@ -186,6 +186,10 @@ export function apply(ctx: Context, config: Config): void {
       },
       due_at: { type: 'integer', description: 'Planned deadline as epoch milliseconds; omit for none' },
       notes: { type: 'string', description: 'Initial process notes' },
+      context_budget_tokens: {
+        type: 'integer',
+        description: "Input-context budget for the executing subagent; a dispatch whose prompt is estimated to exceed it is refused and the task settles blocked. null clears it",
+      },
       status: {
         type: 'string',
         enum: TASK_STATUSES,
@@ -231,6 +235,8 @@ export function apply(ctx: Context, config: Config): void {
         ...args.executor === undefined ? {} : { executor: args.executor },
         ...args.due_at === undefined ? {} : { dueAt: args.due_at },
         ...args.notes === undefined ? {} : { notes: args.notes },
+        ...args.context_budget_tokens === undefined
+          ? {} : { contextBudgetTokens: args.context_budget_tokens },
         // v0.4 W1: an unbound task binds to the workspace owning this cwd
         // when the optional workspace seam is available.
         ...exec.agent?.session.header.cwd === undefined
@@ -280,6 +286,10 @@ export function apply(ctx: Context, config: Config): void {
       },
       due_at: { type: 'integer', description: 'Replace the deadline as epoch milliseconds; null clears it' },
       note: { type: 'string', description: 'Append one process note (never overwrites)' },
+      context_budget_tokens: {
+        type: 'integer',
+        description: "Replace the input-context budget; null clears it",
+      },
       expected_revision: {
         type: 'integer',
         description: 'Revision the caller last read; a mismatch refuses the write',
@@ -311,6 +321,8 @@ export function apply(ctx: Context, config: Config): void {
         ...args.executor === undefined ? {} : { executor: args.executor },
         ...args.due_at === undefined ? {} : { dueAt: args.due_at },
         ...args.note === undefined ? {} : { note: args.note },
+        ...args.context_budget_tokens === undefined
+          ? {} : { contextBudgetTokens: args.context_budget_tokens },
         ...args.expected_revision === undefined ? {} : { expectedRevision: args.expected_revision },
       }, actorOf(exec))
       return summarize(task)

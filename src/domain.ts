@@ -169,6 +169,19 @@ export const taskSchema = z.object({
    */
   notes: z.string().max(100_000).default(''),
   /**
+   * Soft archive stamp (v1.2 C1): a `done` task leaves the active board view
+   * when archived, but is never deleted — `archivedAt: null` restores it.
+   * Additive with `.default(null)`.
+   */
+  archivedAt: z.number().int().nonnegative().nullable().default(null),
+  /**
+   * Input-context budget for the dispatched subagent (v1.2 B2): if the
+   * dispatch prompt is estimated to exceed this many tokens, the task is NOT
+   * dispatched and settles `blocked` with a context-budget reason. `null` =
+   * unlimited. Complements `budgetTokens` (which caps the child's OUTPUT).
+   */
+  contextBudgetTokens: z.number().int().nonnegative().nullable().default(null),
+  /**
    * Who created this task. Added after v1 shipped, so it carries a `default`
    * rather than bumping `DOMAIN_VERSION`: a stored record written before the
    * field existed still parses, and reads back as `agent`. Adding an optional

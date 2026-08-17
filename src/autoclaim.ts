@@ -248,9 +248,24 @@ export function apply(ctx: Context, config: Config): void {
     // follow-up turn in the claiming session when the seam is unavailable or
     // starting it fails.
     if (subagents !== undefined) {
+      // v1.2 B2: an input-context budget refuses a dispatch whose prompt is
+      // estimated to overflow the child's context — settle blocked instead of
+      // dispatching a doomed run.
+      const promptText = renderDispatchPrompt(claimed)
+      if (claimed.contextBudgetTokens !== null) {
+        const estimated = estimateInputTokens(promptText)
+        if (estimated > claimed.contextBudgetTokens) {
+          await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
+            kind: 'error',
+            reason: 'dispatch refused: input context over budget',
+            diagnosis: `estimated ${estimated} tokens exceeds the task's ${claimed.contextBudgetTokens} context budget`,
+          })
+          return
+        }
+      }
       try {
         const run = await subagents.start(config.subagentProvider, {
-          prompt: [{ type: 'text', text: renderDispatchPrompt(claimed) }],
+          prompt: [{ type: 'text', text: promptText }],
           parent: agent,
           signal: new AbortController().signal,
           outputSchema: OUTPUT_SCHEMA,
@@ -551,6 +566,15 @@ function priorityWeight(task: Task): number {
     case 'normal': return 2
     case 'low': return 1
   }
+}
+
+/**
+ * v1.2 B2: conservative input-cost estimate — ~4 chars per token, rounded up.
+ * Deliberately a ceiling: a prompt near the limit is refused rather than
+ * dispatched into a truncated context.
+ */
+export function estimateInputTokens(text: string): number {
+  return Math.ceil(text.length / 4)
 }
 
 /** The dispatch prompt handed to a background subagent (W2). */

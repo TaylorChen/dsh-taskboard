@@ -547,3 +547,32 @@ absent and nothing is shown — visibility is a property of having dispatched.
 requires a reason, written into the task notes (`note: "bounce: …"`) alongside
 the `status → draft` migration — the activity stream reconstructs the full
 bounce (who, when, why), so the next executor knows what to change.
+
+**40. v1.2 (C1): done is archive material, not board clutter.** `archivedAt:
+number | null` (additive, default null) soft-archives a task: `list()` and
+`/board` exclude it by default, `ListFilter.archived: true` queries only the
+archive, and `archive(ref, boolean)` both archives and restores (restoring is
+the same write flipped). Only `done` tasks may be archived; `archiveAllDone()`
+sweeps the whole done column. Archiving is a governance write, not a data
+change — it records an `edited` activity entry and needs no approval because it
+is reversible and touches nothing but the stamp. Export keeps archived tasks
+(backup completeness), so an archive is never a deletion.
+
+**41. v1.2 (B3): the panel says who must act.** The two columns whose ball is
+with a HUMAN — `awaiting_human` and `blocked` — get their count badge in the
+warning colour and bold, so the header reads as a call to action, not a
+statistic. Within a column, cards with an overdue `dueAt` float to the top
+(stable sort over the per-column filter; storage order is untouched). A card
+waiting on a human gets the warning left border, matching the blocked column's
+existing tint. One `now` serves the whole render so the sort and the per-card
+overdue badge cannot disagree.
+
+**42. v1.2 (B2): the input side is budgeted too.** `budgetTokens` caps a
+subagent's OUTPUT; `contextBudgetTokens: number | null` (null = unlimited)
+caps its INPUT. At dispatch the driver estimates the prompt cost as
+`estimateInputTokens(text) = ceil(chars / 4)` — deliberately a ceiling, "宁严
+勿松" — and when the estimate exceeds the task's budget it refuses BEFORE
+starting the child: the task settles `blocked` with a reason naming the
+refusal and a diagnosis quoting the estimate. A giant task is thus recognized
+as undispatchable instead of being launched into a truncated context. The
+estimate is a pure exported function so the formula is unit-tested directly.

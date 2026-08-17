@@ -1,6 +1,6 @@
 {
   "name": "@navidid/dsh-taskboard",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Cross-session, workspace-scoped task board for DeepSeek Harness: a capability seam (ctx.taskboard service + storageDomain provider + task tools + /task commands + JSON API), not a session checklist",
   "type": "module",
   "license": "MIT",
@@ -131,6 +131,7 @@
     "react": "^18.2.0",
     "@types/react": "~18.3.1",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
     "@deepseek-ai/dsh-token-meter": "0.1.0-rc.6",
     "@deepseek-ai/dsh-subagent": "0.1.0-rc.6"
   }

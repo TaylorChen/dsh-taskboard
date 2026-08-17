@@ -171,6 +171,8 @@ export interface CreateTaskInput {
   readonly dueAt?: number | null
   /** v0.9: initial process notes. */
   readonly notes?: string
+  /** v1.2 B2: input-context budget for the dispatched subagent; null = unlimited. */
+  readonly contextBudgetTokens?: number | null
 }
 
 /** Fields accepted when updating a task; omitted fields keep their value. */
@@ -204,6 +206,8 @@ export interface UpdateTaskInput {
   readonly executor?: TaskExecutor
   /** v0.9: replace the deadline; null clears it. */
   readonly dueAt?: number | null
+  /** v1.2 B2: replace the input-context budget; null clears it. */
+  readonly contextBudgetTokens?: number | null
   /**
    * v0.9: APPEND one process note (never overwrites). Appending records a
    * `noted` activity entry.
@@ -224,6 +228,11 @@ export interface ListFilter {
   readonly workspaceId?: string | null
   readonly label?: string
   readonly limit?: number
+  /**
+   * v1.2 C1: `undefined`/`false` excludes archived tasks (the active board);
+   * `true` returns only archived ones.
+   */
+  readonly archived?: boolean
 }
 
 /**
@@ -357,6 +366,9 @@ export class TaskboardService {
       if (filter.status !== undefined && task.status !== filter.status) return false
       if (filter.workspaceId !== undefined && task.workspaceId !== filter.workspaceId) return false
       if (filter.label !== undefined && !task.labels.includes(filter.label)) return false
+      if (filter.archived === undefined || filter.archived === false) {
+        if (task.archivedAt !== null) return false
+      } else if (task.archivedAt === null) return false
       return true
     })
     matched.sort((a, b) => b.updatedAt - a.updatedAt)
@@ -467,6 +479,8 @@ export class TaskboardService {
       executor: input.executor ?? 'any',
       dueAt: input.dueAt ?? null,
       notes: input.notes ?? '',
+      archivedAt: null,
+      contextBudgetTokens: input.contextBudgetTokens ?? null,
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -546,6 +560,9 @@ export class TaskboardService {
       budgetTokens,
       executor: patch.executor ?? current.executor,
       dueAt: patch.dueAt === undefined ? current.dueAt : patch.dueAt,
+      contextBudgetTokens: patch.contextBudgetTokens === undefined
+        ? current.contextBudgetTokens
+        : patch.contextBudgetTokens,
       notes,
       revision: current.revision + 1,
       updatedAt: this.now(),
@@ -741,6 +758,46 @@ export class TaskboardService {
    */
   evidenceOf(ref: TaskRef): TaskEvidence | null {
     return this.require(ref).evidence ?? null
+  }
+
+  /**
+   * Soft-archive a done task (v1.2 C1): it leaves the active board view but is
+   * never deleted. A governance write, not a data change — no approval gate
+   * (archiving is reversible and touches only `archivedAt`).
+   * @param ref - short key or full id.
+   * @param archived - `true` archives, `false` restores.
+   * @returns the stored task.
+   */
+  async archive(ref: TaskRef, archived: boolean): Promise<Task> {
+    const current = this.require(ref)
+    if (archived && current.status !== 'done') {
+      throw new TaskboardError('invalid-input', 'only done tasks can be archived')
+    }
+    const at = this.now()
+    const next: Task = {
+      ...current,
+      archivedAt: archived ? at : null,
+      revision: current.revision + 1,
+      updatedAt: at,
+    }
+    await this.deps.store.putTask(next)
+    await this.recordActivity(current.id as TaskId, 'edited', null, null, { kind: 'human', via: 'panel' }, at)
+    return next
+  }
+
+  /**
+   * Archive every done task (v1.2 C1).
+   * @returns how many tasks were archived.
+   */
+  async archiveAllDone(): Promise<number> {
+    const at = this.now()
+    let count = 0
+    for (const task of this.deps.store.listTasks()) {
+      if (task.status !== 'done' || task.archivedAt !== null) continue
+      await this.deps.store.putTask({ ...task, archivedAt: at, revision: task.revision + 1, updatedAt: at })
+      count += 1
+    }
+    return count
   }
 
   /**
