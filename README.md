@@ -541,6 +541,21 @@ curl -s http://127.0.0.1:3099/api/taskboard/board
 A typechecking build can still fail to boot — Cordis resolves services at
 runtime — so run this before publishing.
 
+The repo also ships **real end-to-end runners** (`tests/e2e/*.mjs`) that boot a
+throwaway dsh home with the plugin linked, drive a real model round, and assert
+the full chain (create → auto-claim → dispatch → evidence → confirm), plus
+route-level checks per version. They run against the npx checkout's packages:
+
+```sh
+DSH_HOME=/tmp/dsh-taskboard-check \
+E2E_DSH_PACKAGE=<npx checkout>/@deepseek-ai/dsh \
+E2E_APP_BOOT_PACKAGE=<npx checkout>/@deepseek-ai/dsh-app-boot \
+node tests/e2e/v14-http.mjs
+```
+
+Unit tests (`pnpm run check`) cover the same contracts in-memory; the runners
+prove the process really boots and serves.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) — it states exactly what this plugin can do on
