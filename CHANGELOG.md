@@ -4,6 +4,29 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.4.2] — 2025-08-17
+
+Create and edit now share ONE task-form modal — the same fields, create starts
+empty.
+
+### Changed
+
+- **Unified task form**: the inline per-column composer (title + priority
+  only) is gone. The `+` on any column opens the same centered modal as 编辑,
+  with empty fields, the target column set by the column clicked (blocked's
+  `+` creates into draft — blocked is an agent report and needs a reason), and
+  the header showing 新建任务 · <column> plus where it will land (the focused
+  project, or the board default).
+- Create now carries the full field set the server already accepted — body,
+  priority, executor, `due_at` — so a task created from the panel is as rich
+  as one created from a tool.
+- Edit behaviour unchanged: PATCH with `expectedRevision` (a racing change
+  stays a 409).
+
+### Migration
+
+None — panel-only change.
+
 ## [1.4.1] — 2025-08-17
 
 Task editing moved out of the card into a centered modal (a 160px column is no

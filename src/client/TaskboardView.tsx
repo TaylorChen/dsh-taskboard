@@ -158,10 +158,19 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [board, setBoard] = useState<BoardPayload | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const [busy, setBusy] = useState(true)
-  // Per-column compose (W5): which column's inline form is open.
-  const [composingIn, setComposingIn] = useState<Column | null>(null)
-  const [draftTitle, setDraftTitle] = useState('')
-  const [draftPriority, setDraftPriority] = useState<string>('normal')
+  // v1.4.2: ONE task form modal for both create and edit — the same fields,
+  // create starts empty, edit loads the card's values. `taskId` is set in edit
+  // mode, `status` is the target column in create mode.
+  const [formDraft, setFormDraft] = useState<{
+    mode: 'edit' | 'create'
+    taskId?: string
+    status?: Column
+    title: string
+    body: string
+    priority: string
+    executor: 'agent' | 'human' | 'any'
+    dueAt: string
+  } | null>(null)
   // Activity drawer (W3).
   const [activityTask, setActivityTask] = useState<BoardTask | null>(null)
   const [activity, setActivity] = useState<ActivityEntry[] | undefined>(undefined)
@@ -177,11 +186,6 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   // v1.3 D1: show the archive instead of the active board (archived tasks are
   // done cards with an archivedAt stamp; restore is one click).
   const [archivedView, setArchivedView] = useState(false)
-  // v1.3 D2: which card's inline editor is open, and the draft field values.
-  const [editDraft, setEditDraft] = useState<{
-    taskId: string, title: string, body: string, priority: string,
-    executor: 'agent' | 'human' | 'any', dueAt: string,
-  } | null>(null)
   // v1.3 D4: two-step confirm for 归档全部 (first click arms, second fires).
   const [archiveAllArmed, setArchiveAllArmed] = useState(false)
   // v1.4 E1: project focus — 'all' shows every project's tasks.
@@ -235,15 +239,20 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     }
   }, [load])
 
-  /** Create a task in the column whose `+` opened the form. */
-  const submitDraft = useCallback(async (): Promise<void> => {
-    const title = draftTitle.trim()
-    if (title === '' || composingIn === null) return
-    await write('/api/taskboard/task', 'POST', { title, priority: draftPriority, status: composingIn })
-    setDraftTitle('')
-    setDraftPriority('normal')
-    setComposingIn(null)
-  }, [draftTitle, draftPriority, composingIn, write])
+  /** v1.4.2: open the create form for a column — same modal as edit, empty
+   * fields, target column fixed. Blocked is an agent's report (it needs a
+   * reason), so its `+` creates into draft instead. */
+  const openCreate = useCallback((column: Column): void => {
+    setFormDraft({
+      mode: 'create',
+      status: column === 'blocked' ? 'draft' : column,
+      title: '',
+      body: '',
+      priority: 'normal',
+      executor: 'any',
+      dueAt: '',
+    })
+  }, [])
 
   /** Open (or refresh) one task's activity drawer. */
   const openActivity = useCallback(async (task: BoardTask): Promise<void> => {
@@ -278,15 +287,15 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [activityTask])
 
-  /** Escape closes the edit modal (v1.4.1), wherever focus is. */
+  /** Escape closes the task form modal (v1.4.1/1.4.2), wherever focus is. */
   useEffect(() => {
-    if (editDraft === null) return
+    if (formDraft === null) return
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setEditDraft(null)
+      if (event.key === 'Escape') setFormDraft(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [editDraft])
+  }, [formDraft])
 
   /** Save the spec editor: one acceptance criterion per line, then the card
    * may move to open. */
@@ -314,21 +323,38 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     setBounceDraft(null)
   }, [bounceDraft, write])
 
-  /** v1.3 D2: save the card editor; empty deadline clears `dueAt`. */
-  const saveEdit = useCallback(async (task: BoardTask): Promise<void> => {
-    if (editDraft === null || editDraft.taskId !== task.id) return
-    const title = editDraft.title.trim()
+  /** v1.4.2: save the task form — PATCH in edit mode (empty deadline clears
+   * `dueAt`), POST in create mode (target column from the `+` that opened
+   * it). Both carry the fields the other mode's card needs. */
+  const saveForm = useCallback(async (task: BoardTask | undefined): Promise<void> => {
+    if (formDraft === null) return
+    const title = formDraft.title.trim()
     if (title === '') return
-    await write(`/api/taskboard/task/${encodeURIComponent(task.id)}`, 'PATCH', {
-      title,
-      ...editDraft.body !== task.body ? { body: editDraft.body } : {},
-      priority: editDraft.priority,
-      executor: editDraft.executor,
-      ...editDraft.dueAt === '' ? { due_at: null } : { due_at: new Date(editDraft.dueAt).getTime() },
-      expectedRevision: task.revision,
-    })
-    setEditDraft(null)
-  }, [editDraft, write])
+    if (formDraft.mode === 'edit') {
+      if (task === undefined || formDraft.taskId !== task.id) return
+      await write(`/api/taskboard/task/${encodeURIComponent(task.id)}`, 'PATCH', {
+        title,
+        ...formDraft.body !== task.body ? { body: formDraft.body } : {},
+        priority: formDraft.priority,
+        executor: formDraft.executor,
+        ...formDraft.dueAt === '' ? { due_at: null } : { due_at: new Date(formDraft.dueAt).getTime() },
+        expectedRevision: task.revision,
+      })
+    } else {
+      await write('/api/taskboard/task', 'POST', {
+        title,
+        ...formDraft.body === '' ? {} : { body: formDraft.body },
+        priority: formDraft.priority,
+        executor: formDraft.executor,
+        ...formDraft.dueAt === '' ? {} : { due_at: new Date(formDraft.dueAt).getTime() },
+        // v1.4.2: when a project is focused, the new task belongs to it —
+        // otherwise the server defaults to the first project.
+        ...projectFilter !== 'all' ? { projectId: projectFilter } : {},
+        status: formDraft.status ?? 'draft',
+      })
+    }
+    setFormDraft(null)
+  }, [formDraft, projectFilter, write])
 
   /** v1.3 D3: one click out of blocked — the server clears the reason. */
   const unblock = useCallback(async (task: BoardTask): Promise<void> => {
@@ -380,7 +406,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     await write('/api/taskboard/reorder', 'POST', { refs: reordered.map(task => task.id) })
   }, [dragId, dragOverId, projectFilter, archivedView, write])
 
-  /** v1.3 D2: seed the editor from a card (epoch ms -> local datetime-local). */
+  /** v1.3 D2 (v1.4.2 modal): seed the form from a card (epoch ms -> local
+   * datetime-local). */
   const openEdit = useCallback((task: BoardTask): void => {
     const pad = (value: number): string => String(value).padStart(2, '0')
     const localInput = task.dueAt === null
@@ -389,7 +416,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         const d = new Date(task.dueAt as number)
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
       })()
-    setEditDraft({
+    setFormDraft({
+      mode: 'edit',
       taskId: task.id,
       title: task.title,
       body: task.body,
@@ -514,7 +542,6 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
             // v1.2 B3: the two columns whose ball is with a HUMAN get the
             // warning accent, so the count says "you must act".
             const attentionColumn = column === 'awaiting_human' || blockedColumn
-            const composingHere = composingIn === column
             return (
               // `minWidth` is the shrink floor, not a target: seven columns
               // must fit a 1280px pane before the row scrolls.
@@ -558,14 +585,12 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         {archiveAllArmed ? t('archive.allConfirm') : t('archive.all')}
                       </button>
                     )}
-                    {/* W5: create straight into this column. */}
+                    {/* v1.4.2: create straight into this column — opens the
+                        same task-form modal as edit, fields empty. */}
                     <button
                       type="button"
                       title={t('new')}
-                      onClick={() => {
-                        setComposingIn(composingHere ? null : column)
-                        setDraftTitle('')
-                      }}
+                      onClick={() => { openCreate(column) }}
                       style={{ ...control, padding: '1px 7px', cursor: 'pointer', lineHeight: 1.4 }}
                     >
                       +
@@ -573,41 +598,6 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                   </span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {composingHere && (
-                    <div style={{ ...surface, display: 'flex', flexDirection: 'column', gap: 6, padding: 8 }}>
-                      <input
-                        autoFocus
-                        value={draftTitle}
-                        placeholder={t('title')}
-                        onChange={event => { setDraftTitle(event.target.value) }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') void submitDraft()
-                          if (event.key === 'Escape') setComposingIn(null)
-                        }}
-                        style={{ ...control, fontSize: 13 }}
-                      />
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <select
-                          value={draftPriority}
-                          onChange={event => { setDraftPriority(event.target.value) }}
-                          style={{ ...control, flex: 1, cursor: 'pointer' }}
-                        >
-                          {PRIORITIES.map(priority => <option key={priority} value={priority}>{priority}</option>)}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => { void submitDraft() }}
-                          disabled={busy || draftTitle.trim() === ''}
-                          style={{ ...control, cursor: 'pointer' }}
-                        >
-                          {t('create')}
-                        </button>
-                        <button type="button" onClick={() => { setComposingIn(null) }} style={{ ...control, cursor: 'pointer' }}>
-                          {t('cancel')}
-                        </button>
-                      </div>
-                    </div>
-                  )}
                   {tasks.map(task => (
                     <article
                       key={task.id}
@@ -1048,22 +1038,31 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         </>
       )}
 
-      {/* v1.4.1: the card editor as a centered modal — a 160px column is no
-          place for a form. Backdrop click or Escape closes; saving carries
-          the read revision, so a concurrent change is a 409, not a clobber. */}
-      {editDraft !== null && (() => {
-        const editingTask = board?.tasks.find(task => task.id === editDraft.taskId)
-        if (editingTask === undefined) return null
+      {/* v1.4.1/1.4.2: the ONE task form — edit and create share this centered
+          modal (a 160px column is no place for a form). Backdrop click or
+          Escape closes; saving carries the read revision in edit mode, so a
+          concurrent change is a 409, not a clobber. */}
+      {formDraft !== null && (() => {
+        const editingTask = formDraft.mode === 'edit'
+          ? board?.tasks.find(task => task.id === formDraft.taskId)
+          : undefined
+        if (formDraft.mode === 'edit' && editingTask === undefined) return null
+        const heading = formDraft.mode === 'edit'
+          ? `${t('edit.title')} ${editingTask?.key ?? editingTask?.id.slice(0, 8)}`
+          : `${t('new')} · ${t(`column.${formDraft.status ?? 'draft'}` as TaskboardKey)}`
+        const meta = formDraft.mode === 'edit' && editingTask !== undefined
+          ? `${projectName(editingTask.projectId)} · ${t(`column.${editingTask.status}` as TaskboardKey)}`
+          : `${projectFilter !== 'all' ? projectName(projectFilter) : t('project.all')} · ${t(`column.${formDraft.status ?? 'draft'}` as TaskboardKey)}`
         return (
           <>
             <div
-              onClick={() => { setEditDraft(null) }}
+              onClick={() => { setFormDraft(null) }}
               style={{ position: 'absolute', inset: 0, zIndex: 30, background: 'color-mix(in oklab, currentColor 18%, transparent)', backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)' }}
             />
             <div
               role="dialog"
               aria-modal="true"
-              aria-label={`${t('edit.title')} ${editingTask.key ?? editingTask.id}`}
+              aria-label={heading}
               style={{
                 position: 'absolute',
                 top: '50%',
@@ -1085,15 +1084,11 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, borderBottom: '1px solid color-mix(in oklab, currentColor 12%, transparent)' }}>
-                <strong style={{ fontSize: 13, flex: 1 }}>
-                  {t('edit.title')} {editingTask.key ?? editingTask.id.slice(0, 8)}
-                </strong>
-                <span style={{ fontSize: 11, opacity: 0.6 }}>
-                  {projectName(editingTask.projectId)} · {t(`column.${editingTask.status}` as TaskboardKey)}
-                </span>
+                <strong style={{ fontSize: 13, flex: 1 }}>{heading}</strong>
+                <span style={{ fontSize: 11, opacity: 0.6 }}>{meta}</span>
                 <button
                   type="button"
-                  onClick={() => { setEditDraft(null) }}
+                  onClick={() => { setFormDraft(null) }}
                   style={{ ...control, cursor: 'pointer' }}
                   title={t('cancel')}
                 >
@@ -1103,32 +1098,32 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
                 <input
                   autoFocus
-                  value={editDraft.title}
+                  value={formDraft.title}
                   placeholder={t('title')}
-                  onChange={event => { setEditDraft({ ...editDraft, title: event.target.value }) }}
+                  onChange={event => { setFormDraft({ ...formDraft, title: event.target.value }) }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Escape') setEditDraft(null)
+                    if (event.key === 'Escape') setFormDraft(null)
                   }}
                   style={{ ...control, fontSize: 13 }}
                 />
                 <textarea
-                  value={editDraft.body}
+                  value={formDraft.body}
                   placeholder={t('edit.body')}
                   rows={6}
-                  onChange={event => { setEditDraft({ ...editDraft, body: event.target.value }) }}
+                  onChange={event => { setFormDraft({ ...formDraft, body: event.target.value }) }}
                   style={{ ...control, fontSize: 12, resize: 'vertical', fontFamily: 'inherit' }}
                 />
                 <div style={{ display: 'flex', gap: 10 }}>
                   <select
-                    value={editDraft.priority}
-                    onChange={event => { setEditDraft({ ...editDraft, priority: event.target.value }) }}
+                    value={formDraft.priority}
+                    onChange={event => { setFormDraft({ ...formDraft, priority: event.target.value }) }}
                     style={{ ...control, fontSize: 12, flex: 1, cursor: 'pointer' }}
                   >
                     {PRIORITIES.map(priority => <option key={priority} value={priority}>{priority}</option>)}
                   </select>
                   <select
-                    value={editDraft.executor}
-                    onChange={event => { setEditDraft({ ...editDraft, executor: event.target.value as 'agent' | 'human' | 'any' }) }}
+                    value={formDraft.executor}
+                    onChange={event => { setFormDraft({ ...formDraft, executor: event.target.value as 'agent' | 'human' | 'any' }) }}
                     style={{ ...control, fontSize: 12, flex: 1, cursor: 'pointer' }}
                   >
                     {(['agent', 'human', 'any'] as const).map(executor => (
@@ -1138,22 +1133,22 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                 </div>
                 <input
                   type="datetime-local"
-                  value={editDraft.dueAt}
-                  onChange={event => { setEditDraft({ ...editDraft, dueAt: event.target.value }) }}
+                  value={formDraft.dueAt}
+                  onChange={event => { setFormDraft({ ...formDraft, dueAt: event.target.value }) }}
                   style={{ ...control, fontSize: 12 }}
                 />
                 <div style={{ display: 'flex', gap: 10 }}>
                   <button
                     type="button"
-                    onClick={() => { void saveEdit(editingTask) }}
-                    disabled={busy || editDraft.title.trim() === ''}
+                    onClick={() => { void saveForm(editingTask) }}
+                    disabled={busy || formDraft.title.trim() === ''}
                     style={{ ...control, fontSize: 13, padding: '6px 12px', cursor: 'pointer', flex: 1 }}
                   >
-                    {t('edit.save')}
+                    {formDraft.mode === 'edit' ? t('edit.save') : t('create')}
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setEditDraft(null) }}
+                    onClick={() => { setFormDraft(null) }}
                     style={{ ...control, fontSize: 13, padding: '6px 12px', cursor: 'pointer' }}
                   >
                     {t('cancel')}
