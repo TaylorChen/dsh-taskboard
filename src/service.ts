@@ -371,7 +371,14 @@ export class TaskboardService {
       } else if (task.archivedAt === null) return false
       return true
     })
-    matched.sort((a, b) => b.updatedAt - a.updatedAt)
+    // v1.4 E3: ranked tasks first (ascending sortOrder), then by recency;
+    // unranked tasks (sortOrder null) sit after every ranked one.
+    matched.sort((a, b) => {
+      const ar = a.sortOrder ?? Number.MAX_SAFE_INTEGER
+      const br = b.sortOrder ?? Number.MAX_SAFE_INTEGER
+      if (ar !== br) return ar - br
+      return b.updatedAt - a.updatedAt
+    })
     return filter.limit === undefined ? matched : matched.slice(0, filter.limit)
   }
 
@@ -481,6 +488,7 @@ export class TaskboardService {
       notes: input.notes ?? '',
       archivedAt: null,
       contextBudgetTokens: input.contextBudgetTokens ?? null,
+      sortOrder: null,
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -798,6 +806,60 @@ export class TaskboardService {
       count += 1
     }
     return count
+  }
+
+  /**
+   * Pin one column's manual order (v1.4 E3): the given task refs become that
+   * column's `sortOrder` 0..n-1, and every other task of the same column loses
+   * its rank (`sortOrder = null`) — a dragged column's order is authoritative.
+   *
+   * A governance write like archiving: human-initiated, reversible (set the
+   * same column's order again, or reorder an empty column is a no-op), touches
+   * only `sortOrder`, so it needs no approval gate.
+   * @param refs - the column's full ordered list (every task of the column).
+   * @returns how many tasks were rewritten.
+   */
+  async reorder(refs: readonly TaskRef[]): Promise<number> {
+    if (refs.length === 0) throw new TaskboardError('invalid-input', 'reorder needs at least one task')
+    const ids = refs.map(ref => this.resolve(ref)?.id)
+    if (ids.some(id => id === undefined)) {
+      throw new TaskboardError('not-found', 'a reordered task does not exist')
+    }
+    const unique = new Set(ids as string[])
+    if (unique.size !== ids.length) {
+      throw new TaskboardError('invalid-input', 'reorder carries a duplicate task')
+    }
+    const tasks = (ids as string[]).map(id => this.deps.store.getTask(id as TaskId))
+    const first = tasks[0]
+    if (first === undefined) throw new TaskboardError('not-found', 'a reordered task does not exist')
+    // The batch must cover the WHOLE column — partial reorders would silently
+    // demote every task left out, so refuse instead. The "column" is the
+    // status (and archived state), not status+project: the panel's column is
+    // one status, and a project filter hides other projects' ids from it.
+    const column = this.deps.store.listTasks().filter(task =>
+      task.status === first.status
+      && (task.archivedAt === null) === (first.archivedAt === null))
+    if (column.length !== unique.size) {
+      throw new TaskboardError(
+        'invalid-input',
+        `reorder must name every task of the column (${unique.size} given, ${column.length} in column)`,
+      )
+    }
+
+    const at = this.now()
+    const ranked = new Set(ids as string[])
+    let written = 0
+    for (const task of column) {
+      const next: Task = {
+        ...task,
+        sortOrder: ranked.has(task.id) ? (ids as string[]).indexOf(task.id) : null,
+        revision: task.revision + 1,
+        updatedAt: at,
+      }
+      await this.deps.store.putTask(next)
+      written += 1
+    }
+    return written
   }
 
   /**

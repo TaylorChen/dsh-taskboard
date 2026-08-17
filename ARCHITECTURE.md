@@ -614,3 +614,26 @@ visible on the card, so the unblock is informed.
 /api/taskboard/archive-done` returns `{archived: n}` and the panel's done
 column header button (two-step: arm → confirm) calls it. This is the UI exit
 for the `archiveAllDone()` service method that v1.2 shipped without one.
+
+**48. v1.4 (E1): the board focuses by project.** The panel's project dropdown
+filters `/board?project=<id>` — one query parameter on a filter that already
+existed (`ListFilter.projectId`, v0.2). The filter composes with `archived` and
+`status`, so the archive view and the stats strip stay coherent under focus.
+
+**49. v1.4 (E2): the board has a glance line.** A stats strip under the header
+derives everything from the loaded board: total, open, in-progress, the
+waiting-on-you sum (awaiting_human + blocked, in warning colour), overdue
+(dueAt past, excluding done/cancelled), done. No new endpoint — the panel
+already holds the whole board.
+
+**50. v1.4 (E3): a column's order is a fact, not a rendering.** `sortOrder:
+number | null` (additive, default null) is the manual rank; `list()` sorts
+ranked tasks first (ascending) then by recency, so the storage order IS the
+manual order. `reorder(refs)` pins a whole column at once — it must name every
+task of the status (partial reorders would silently demote the rest, so they
+are refused), assigns 0..n-1, and unranks the others. The panel drags cards
+(HTML5 DnD) and POSTs the column's full id list; while a drag is live the
+column renders in storage order, so the v1.2 overdue float (a render hint)
+never gets baked into `sortOrder`. Reorder is status-wide, not
+status+project: the panel's column is one status, and a project filter hides
+other projects' ids from it.

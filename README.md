@@ -267,6 +267,18 @@ next task's context.
 - **Archive all done.** The done column's **归档全部** button sweeps the whole
   column (`POST /api/taskboard/archive-done`), with a two-step confirm.
 
+## Board usability: project focus, glance stats, manual order (v1.4)
+
+- **Project focus.** The header dropdown filters the board to one project
+  (`/board?project=<id>`) — it composes with the archive view.
+- **Glance stats.** A line under the header shows total, open, in-progress,
+  **等你** (awaiting_human + blocked, warning colour), overdue, and done —
+  all derived from the loaded board.
+- **Drag to reorder.** Cards in the **全部项目** view are draggable: drop one
+  between others and the column's order is pinned (`POST
+  /api/taskboard/reorder`, whole-column). Overdue cards still float to the top
+  as a render hint; the manual order is the storage fact underneath.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
@@ -368,7 +380,7 @@ further action.
 
 | Method | Path | Effect |
 | --- | --- | --- |
-| GET | `/api/taskboard/board?status=…&archived=true` | Read the board (archived tasks only when `archived=true`) |
+| GET | `/api/taskboard/board?status=…&archived=true&project=<id>` | Read the board (filter by status / archive / project) |
 | GET | `/api/taskboard/task/<id\|key>` | Read one task |
 | GET | `/api/taskboard/task/<id\|key>/activity` | One task's activity stream, newest first |
 | GET | `/api/taskboard/export` | Backup document (includes archived) |
@@ -376,6 +388,7 @@ further action.
 | PATCH | `/api/taskboard/task/<id\|key>` | Update; send `expectedRevision` to refuse a stale write |
 | PATCH | `/api/taskboard/task/<id\|key>` | Archive/restore: send `{ "archived": true\|false }` (v1.2) |
 | POST | `/api/taskboard/archive-done` | Sweep the whole done column; returns `{ "archived": n }` (v1.3) |
+| POST | `/api/taskboard/reorder` | Pin a column's order: `{ "refs": [<id\|key>…] }` — the column's FULL list (v1.4) |
 
 Create/update also accept `context_budget_tokens` (input-context cap for the
 dispatched subagent; `null` clears it) since v1.2.

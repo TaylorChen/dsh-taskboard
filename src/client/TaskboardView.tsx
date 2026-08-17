@@ -184,12 +184,22 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   } | null>(null)
   // v1.3 D4: two-step confirm for 归档全部 (first click arms, second fires).
   const [archiveAllArmed, setArchiveAllArmed] = useState(false)
+  // v1.4 E1: project focus — 'all' shows every project's tasks.
+  const [projectFilter, setProjectFilter] = useState<string>('all')
+  // v1.4 E3: the card being dragged and the card currently under the cursor.
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     setBusy(true)
     try {
-      // v1.3 D1: the archive is the same board, one query away.
-      const response = await fetch(`/api/taskboard/board${archivedView ? '?archived=true' : ''}`)
+      // v1.3 D1: the archive is the same board, one query away; v1.4 E1: the
+      // project focus composes with it.
+      const params = new URLSearchParams()
+      if (archivedView) params.set('archived', 'true')
+      if (projectFilter !== 'all') params.set('project', projectFilter)
+      const qs = params.toString()
+      const response = await fetch(`/api/taskboard/board${qs === '' ? '' : `?${qs}`}`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       setBoard(await response.json() as BoardPayload)
       setError(undefined)
@@ -198,7 +208,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     } finally {
       setBusy(false)
     }
-  }, [archivedView])
+  }, [archivedView, projectFilter])
 
   useEffect(() => { void load() }, [load])
 
@@ -339,6 +349,27 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     }
   }, [load])
 
+  /** v1.4 E3: drop the dragged card into the column at the hovered position
+   * and POST the column's full order. Only in the unfiltered view — a project
+   * filter hides the ids the whole-column check needs. */
+  const dropOn = useCallback(async (column: Column, columnTasks: BoardTask[]): Promise<void> => {
+    if (dragId === null || projectFilter !== 'all' || archivedView) return
+    const from = columnTasks.findIndex(task => task.id === dragId)
+    if (from === -1) return // dragged from another column — moves go via the status select
+    const over = dragOverId === null
+      ? columnTasks.length - 1
+      : Math.max(0, columnTasks.findIndex(task => task.id === dragOverId))
+    const reordered = [...columnTasks]
+    const moved = reordered[from] as BoardTask
+    reordered.splice(from, 1)
+    reordered.splice(over, 0, moved)
+    const unchanged = reordered.every((task, index) => task.id === columnTasks[index]?.id)
+    setDragId(null)
+    setDragOverId(null)
+    if (unchanged) return
+    await write('/api/taskboard/reorder', 'POST', { refs: reordered.map(task => task.id) })
+  }, [dragId, dragOverId, projectFilter, archivedView, write])
+
   /** v1.3 D2: seed the editor from a card (epoch ms -> local datetime-local). */
   const openEdit = useCallback((task: BoardTask): void => {
     const pad = (value: number): string => String(value).padStart(2, '0')
@@ -390,8 +421,20 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, height: '100%', overflow: 'hidden', position: 'relative' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <strong style={{ fontSize: 14 }}>{t('view.taskboard')}</strong>
+        {/* v1.4 E1: project focus — one project at a time, or everything. */}
+        <select
+          value={projectFilter}
+          disabled={busy}
+          onChange={event => { setProjectFilter(event.target.value) }}
+          style={{ ...control, cursor: 'pointer' }}
+        >
+          <option value="all">{t('project.all')}</option>
+          {board?.projects.map(project => (
+            <option key={project.id} value={project.id}>{project.name}</option>
+          ))}
+        </select>
         <span style={{ fontSize: 12, opacity: 0.6, flex: 1 }}>{t('hint')}</span>
         {/* v1.3 D1: the archive is one query away — 归档 ≠ 删除, and the
             toggle is how history comes back into view. */}
@@ -414,6 +457,26 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         </button>
       </div>
 
+      {/* v1.4 E2: the board at a glance — totals, the waiting-on-you sum in
+          warning colour, and overdue work. All derived from the loaded board. */}
+      {board !== undefined && (
+        <div style={{ display: 'flex', gap: 14, fontSize: 12, opacity: 0.85, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span>{t('stats.total')}: {board.tasks.length}</span>
+          <span>{t('stats.open')}: {board.tasks.filter(task => task.status === 'open').length}</span>
+          <span>{t('stats.inProgress')}: {board.tasks.filter(task => task.status === 'in_progress').length}</span>
+          <span style={{ color: BLOCKED_TINT, fontWeight: 700 }}>
+            {t('stats.waiting')}: {board.tasks.filter(task => task.status === 'awaiting_human' || task.status === 'blocked').length}
+          </span>
+          <span style={{ color: board.tasks.some(task => task.dueAt !== null && task.dueAt < now && task.status !== 'done' && task.status !== 'cancelled') ? BLOCKED_TINT : undefined }}>
+            {t('stats.overdue')}: {board.tasks.filter(task => task.dueAt !== null && task.dueAt < now && task.status !== 'done' && task.status !== 'cancelled').length}
+          </span>
+          <span>{t('stats.done')}: {board.tasks.filter(task => task.status === 'done').length}</span>
+          {projectFilter !== 'all' && !archivedView && (
+            <span style={{ opacity: 0.55 }}>{t('sort.hint')}</span>
+          )}
+        </div>
+      )}
+
       {error !== undefined && (
         <div style={{ ...surface, padding: 12, fontSize: 13, color: 'color-mix(in oklab, #e5484d 80%, currentColor)' }}>
           {t('error')}: {error}
@@ -427,11 +490,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       {board !== undefined && board.tasks.length > 0 && (
         <div style={{ display: 'flex', gap: 12, overflowX: 'auto', flex: 1, alignItems: 'flex-start' }}>
           {COLUMNS.map((column) => {
+            // v1.4 E3: while a drag is live IN this column, render the true
+            // storage order — the overdue float is a render hint, and the
+            // reorder must not bake it into sortOrder.
+            const draggingHere = dragId !== null
+              && board.tasks.some(task => task.id === dragId && task.status === column)
             // v1.2 B3: overdue cards float to the top of their column (stable
             // sort keeps the storage order for everything else).
             const tasks = board.tasks
               .filter(task => task.status === column)
-              .sort((a, b) => overdueRank(a, now) - overdueRank(b, now))
+              .sort((a, b) => draggingHere ? 0 : overdueRank(a, now) - overdueRank(b, now))
             const blockedColumn = column === 'blocked'
             // v1.2 B3: the two columns whose ball is with a HUMAN get the
             // warning accent, so the count says "you must act".
@@ -442,6 +510,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
               // must fit a 1280px pane before the row scrolls.
               <div
                 key={column}
+                onDragOver={(event) => { event.preventDefault() }}
+                onDrop={() => { void dropOn(column, tasks) }}
                 style={{
                   ...surface,
                   minWidth: 160,
@@ -531,10 +601,24 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                   {tasks.map(task => (
                     <article
                       key={task.id}
+                      // v1.4 E3: drag to reorder — only in the unfiltered
+                      // active view (the whole-column check needs all ids).
+                      draggable={!archivedView && projectFilter === 'all' && !busy}
+                      onDragStart={() => { setDragId(task.id); setDragOverId(task.id) }}
+                      onDragEnd={() => { setDragId(null); setDragOverId(null) }}
+                      onDragOver={(event) => { event.preventDefault(); setDragOverId(task.id) }}
+                      title={!archivedView && projectFilter === 'all' ? t('sort.drag') : t('sort.hint')}
                       style={{
                         ...surface,
                         background: 'color-mix(in oklab, currentColor 7%, transparent)',
                         padding: 10,
+                        cursor: !archivedView && projectFilter === 'all' && !busy ? 'grab' : 'default',
+                        ...dragOverId === task.id && dragId !== null && dragId !== task.id
+                          ? { borderTop: '2px solid color-mix(in oklab, currentColor 45%, transparent)' }
+                          : {},
+                        ...dragId === task.id
+                          ? { opacity: 0.45 }
+                          : {},
                         borderLeft: `3px solid ${
                           // v1.2 B3: a card waiting on a human gets the warning
                           // accent (blocked cards already paint all borders red

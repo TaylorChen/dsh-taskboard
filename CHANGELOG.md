@@ -4,6 +4,35 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.4.0] — 2025-08-17
+
+Board usability (from the v1.4 plan): projects get focus, the board gets a
+glance line, and a column's order becomes controllable.
+
+### Added
+
+- **Project focus (E1)**: the panel's project dropdown filters
+  `/board?project=<id>`; composes with the archive view.
+- **Glance stats (E2)**: a stats strip under the header — total, open,
+  in-progress, 等你 (awaiting_human + blocked in warning colour), overdue
+  (dueAt past, excluding done/cancelled), done — all derived from the loaded
+  board, no new endpoint.
+- **Drag to reorder (E3)**: `sortOrder` (additive, default null) ranks a
+  column's tasks; `list()` serves ranked-first order so storage order IS the
+  manual order. `reorder(refs)` pins a WHOLE column (partial batches are
+  refused — they would silently demote the rest) and unranks the others. The
+  panel drags cards (HTML5 DnD, 全部项目 view) and POSTs the column's full id
+  list; while dragging, the column renders in storage order so the v1.2
+  overdue float never leaks into `sortOrder`. New route `POST
+  /api/taskboard/reorder`.
+- Real E2E (`tests/e2e/v14-http.mjs`): project filter + composition, reorder
+  round-trip served by `/board`, restore, partial reorder refused.
+
+### Migration
+
+None — additive `sortOrder` field with `.default(null)`; reorder is
+opt-in by construction (unranked tasks keep recency order).
+
 ## [1.3.0] — 2025-08-17
 
 Experience (from the v1.3 plan): cross-process writes stop silently losing

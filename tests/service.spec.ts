@@ -337,6 +337,7 @@ describe('short ids', () => {
         notes: '',
         archivedAt: null,
         contextBudgetTokens: null,
+      sortOrder: null,
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -536,6 +537,7 @@ describe('auto-claim', () => {
       notes: '',
       archivedAt: null,
       contextBudgetTokens: null,
+      sortOrder: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -709,6 +711,7 @@ describe('task spec (v0.5 L2)', () => {
       notes: '',
       archivedAt: null,
       contextBudgetTokens: null,
+      sortOrder: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -1017,6 +1020,56 @@ describe('context budget (v1.2 B2)', () => {
 
     const cleared = await service.update(task.key as string, { contextBudgetTokens: null }, actor)
     expect(cleared.contextBudgetTokens).toBeNull()
+  })
+})
+
+describe('manual ordering (v1.4 E3)', () => {
+  it('pins a column order, ranks by sortOrder then recency', async () => {
+    const { service, actor } = build('auto')
+    const a = await service.create({ projectId: PROJECT_ID, title: 'A', acceptanceCriteria: ['a'] }, actor)
+    const b = await service.create({ projectId: PROJECT_ID, title: 'B', acceptanceCriteria: ['b'] }, actor)
+    const c = await service.create({ projectId: PROJECT_ID, title: 'C', acceptanceCriteria: ['c'] }, actor)
+    // Storage order is recency: C, B, A. Pin the reverse.
+    await service.reorder([a.key as string, b.key as string, c.key as string])
+
+    const ordered = service.list().map(task => task.title)
+    expect(ordered).toEqual(['A', 'B', 'C'])
+    expect(service.get(a.key as string)?.sortOrder).toBe(0)
+    expect(service.get(c.key as string)?.sortOrder).toBe(2)
+  })
+
+  it('unranks every task not named in a later reorder', async () => {
+    const { service, actor } = build('auto')
+    const a = await service.create({ projectId: PROJECT_ID, title: 'A', acceptanceCriteria: ['a'] }, actor)
+    const b = await service.create({ projectId: PROJECT_ID, title: 'B', acceptanceCriteria: ['b'] }, actor)
+    const c = await service.create({ projectId: PROJECT_ID, title: 'C', acceptanceCriteria: ['c'] }, actor)
+    await service.reorder([a.key as string, b.key as string, c.key as string])
+    // Full-column reorder again: the previous ranks are replaced wholesale.
+    await service.reorder([c.key as string, b.key as string, a.key as string])
+    expect(service.list().map(task => task.title)).toEqual(['C', 'B', 'A'])
+  })
+
+  it('refuses a partial, duplicate, or unknown reorder', async () => {
+    const { service, actor } = build('auto')
+    const a = await service.create({ projectId: PROJECT_ID, title: 'A', acceptanceCriteria: ['a'] }, actor)
+    const b = await service.create({ projectId: PROJECT_ID, title: 'B', acceptanceCriteria: ['b'] }, actor)
+    await service.create({ projectId: PROJECT_ID, title: 'C', acceptanceCriteria: ['c'] }, actor)
+
+    await expect(service.reorder([a.key as string])).rejects.toThrow(/every task/)
+    await expect(service.reorder([a.key as string, a.key as string, b.key as string]))
+      .rejects.toThrow(/duplicate/)
+    await expect(service.reorder(['no-such-key'])).rejects.toThrow(/does not exist/)
+  })
+
+  it('keeps each column order independent', async () => {
+    const { service, actor } = build('auto')
+    const openA = await service.create({ projectId: PROJECT_ID, title: 'OA', acceptanceCriteria: ['a'] }, actor)
+    const openB = await service.create({ projectId: PROJECT_ID, title: 'OB', acceptanceCriteria: ['b'] }, actor)
+    const draftX = await service.create({ projectId: PROJECT_ID, title: 'DX', status: 'draft' }, actor)
+    // Reordering the open column must not touch the draft column.
+    await service.reorder([openB.key as string, openA.key as string])
+    expect(service.list({ status: 'open' }).map(task => task.title)).toEqual(['OB', 'OA'])
+    expect(service.get(draftX.key as string)?.sortOrder).toBeNull()
   })
 })
 

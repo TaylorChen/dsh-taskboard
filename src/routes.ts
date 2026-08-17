@@ -68,6 +68,8 @@ export function apply(ctx: Context): void {
     const url = new URL(req.url ?? '', 'http://localhost')
     const status = url.searchParams.get('status') ?? undefined
     const archived = url.searchParams.get('archived') === 'true'
+    // v1.4 E1: project focus — filter the active board to one project.
+    const project = url.searchParams.get('project') ?? undefined
     if (status !== undefined && !isStatus(status)) {
       return json(res, 400, { error: `unknown status '${status}'` })
     }
@@ -75,6 +77,7 @@ export function apply(ctx: Context): void {
       projects: ctx.taskboard.projects(),
       tasks: ctx.taskboard.list({
         ...status === undefined ? {} : { status },
+        ...project === undefined ? {} : { projectId: project },
         ...archived ? { archived: true } : {},
       }),
       // v0.4 W1: workspace id -> display title, so the panel can name a
@@ -97,6 +100,22 @@ export function apply(ctx: Context): void {
     if (req.method !== 'POST') return json(res, 405, { error: 'use POST to archive all done tasks' })
     const archived = await ctx.taskboard.archiveAllDone()
     json(res, 200, { archived })
+  })
+
+  // v1.4 E3: pin one column's manual order. The body names the column's FULL
+  // ordered list (every task of that column), which becomes sortOrder 0..n-1.
+  route(`${BASE}/reorder`, 'exact', async (req, res) => {
+    if (req.method !== 'POST') return json(res, 405, { error: 'use POST to reorder a column' })
+    const body = await readJsonBody(req, res)
+    if (body === undefined) return
+    await guard(res, async () => {
+      const refs = (body as Record<string, unknown>).refs
+      if (!Array.isArray(refs) || refs.some(ref => typeof ref !== 'string')) {
+        throw new TaskboardError('invalid-input', 'refs must be an array of task ids or keys')
+      }
+      const reordered = await ctx.taskboard.reorder(refs as string[])
+      json(res, 200, { reordered })
+    })
   })
 
   // Create. POST so a link or an <img> can never reach it, and JSON-only so a

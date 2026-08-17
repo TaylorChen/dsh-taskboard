@@ -182,6 +182,12 @@ export const taskSchema = z.object({
    */
   contextBudgetTokens: z.number().int().nonnegative().nullable().default(null),
   /**
+   * Manual column ordering (v1.4 E3): `sortOrder` pins a task's position
+   * inside its column; `null` = unranked (falls after ranked tasks, then by
+   * `updatedAt`). Written in bulk by `reorder`; additive with `.default(null)`.
+   */
+  sortOrder: z.number().int().nonnegative().nullable().default(null),
+  /**
    * Who created this task. Added after v1 shipped, so it carries a `default`
    * rather than bumping `DOMAIN_VERSION`: a stored record written before the
    * field existed still parses, and reads back as `agent`. Adding an optional
