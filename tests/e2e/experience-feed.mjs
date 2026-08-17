@@ -85,7 +85,10 @@ agent.followup(createUserMessage({
 await agent.whenIdle()
 
 // The session log should hold both the injected digest and the create result.
-const sessionDir = `/tmp/dsh-e2e-v06/sessions/--private-tmp-dsh-e2e-v06--/${agent.id}`
+// Sessions live under $DSH_HOME/sessions/<cwd-scope>/<session-id>/; the scope
+// name is derived from the runner's cwd (e.g. --private-tmp-dsh-e2e-v06--).
+const cwdScope = `--${process.cwd().replace(/^[/\\]+/, '').replace(/[/\\]/g, '-')}--`
+const sessionDir = `${process.env.DSH_HOME}/sessions/${cwdScope}/${agent.id}`
 const { execFileSync } = await import('node:child_process')
 const zstd = execFileSync('zstd', ['-dc', `${sessionDir}/session.jsonl.zstd`], { maxBuffer: 64 * 1024 * 1024 })
 const logText = zstd.toString('utf8')
