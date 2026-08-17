@@ -71,6 +71,27 @@ off:
 Because the medium is home-level, a headless run and the web UI then share one
 board.
 
+## Quick start (5 minutes)
+
+After `dsh web` is running, open any session — the board is the third view tab
+(任务板), and the agent has the `task_*` tools. A task's full life:
+
+1. **Create it.** Click the `+` on any column in the panel, or tell the agent
+   `create a task on the task board titled "…"` (the agent calls `task_create`).
+   Without acceptance criteria the task lands in 待立项 (`draft`).
+2. **Spec it.** A task is only claimable when it has at least one
+   `acceptance_criteria`. Add them in the panel's API, or tell the agent
+   `update task TB-1: set acceptance_criteria to ["…"]` — then move it to
+   `open` (等待认领).
+3. **Claim it.** With auto-claim enabled (below), an idle agent picks it up
+   automatically; otherwise ask the agent `claim task TB-1`.
+4. **Confirm it.** When the work settles, the task lands in 等你确认
+   (`awaiting_human`) with execution evidence (per-criterion ✓/✗). Review the
+   evidence, then 确认完成 (→ `done`) or 打回待立项 (→ `draft`).
+
+That is the whole loop: **you define and confirm, the agent executes and
+reports.**
+
 ## Model-facing tools
 
 | Tool | Effect |
@@ -88,6 +109,22 @@ parameter accepts the key or the full id, and the model only ever sees the key.
 the revision it last read loses to any write that landed meanwhile
 (`revision-conflict`) instead of silently clobbering it. This is what makes
 parallel sessions on one board safe.
+
+### Tool parameters (v1.0)
+
+| Parameter | Tools | Meaning |
+| --- | --- | --- |
+| `acceptance_criteria` | `create`, `update` | Checkable success conditions; the gate to `open` |
+| `context_refs` | `create`, `update` | Files/commits/issues the executor should read (soft hint) |
+| `definition_of_done` | `create`, `update` | Optional closing conditions |
+| `depends_on` | `create`, `update` | Prerequisite task ids/keys; claimable only when each is `done`/`cancelled` |
+| `budget_tokens` | `create`, `update` | Output-token cap for the executing subagent; `null` clears |
+| `executor` | `create`, `update` | `agent` / `human` / `any` (default). `human` tasks are never auto-claimed |
+| `due_at` | `create`, `update` | Planned deadline (epoch ms); auto-claim prefers earlier |
+| `note` / `notes` | `update` / `create` | Process note — `note` appends, never overwrites |
+| `status` | `create`, `update` | Board column (default `draft` unless criteria are given) |
+| `expected_revision` | `update`, `claim` | Optimistic-concurrency guard |
+| `reason` | `block` | Why the agent is stuck; required |
 
 ## The status machine
 
@@ -236,7 +273,12 @@ is the host's own workspace UI, not this plugin's.)
 
 ## Commands
 
-`/task list [status]` · `/task show <id|key>` · `/task export`
+```
+/task list               # all tasks
+/task list open          # one column (draft | open | in_progress | awaiting_human | blocked | done | cancelled)
+/task show TB-1          # one task, by key or id
+/task export             # backup document to stdout
+```
 
 Commands are read-only in this version. They dispatch without spending a model
 turn. (Human-initiated command writes are possible now that the gate keys on the
@@ -332,11 +374,33 @@ domain version rejects at open. `/task export` and `GET /api/taskboard/export`
 produce a `dsh-taskboard-export-v1` document, and `ctx.taskboard.importDocument`
 reads it back.
 
-> **Upgrading to v0.2? Export first.** v0.2 normalizes stored statuses and
-> backfills keys — the board reads fine after the upgrade, but rolling back to
-> v0.1 afterwards would make the normalized records fail to parse. Export
-> (`/task export` or the export route) before upgrading, so you can restore if
-> you ever need to go back.
+> **Upgrading? Export first.** The storage layer never migrates: v0.2
+> normalized stored statuses and backfilled keys, and a board written by a
+> newer version may not parse in an older one. Run `/task export` (or the
+> export route) before upgrading, so you can restore if you need to go back.
+
+## Common questions
+
+**Why is my task stuck in 待立项 (draft)?** It has no acceptance criteria —
+the gate to `open`. Add at least one (`task_update` with
+`acceptance_criteria`, or the API), then move it to `open`.
+
+**Why didn't the agent pick up my task?** Either auto-claim is off (it is by
+default — see below), the task has no criteria (still `draft`), a dependency
+is unfinished, or the task is `executor: human`. Ask the agent to `claim` it
+explicitly, or enable auto-claim.
+
+**Why is my task in 遇到阻碍 (blocked)?** The executing agent reported it
+stuck (`task_block`), the subagent failed, or it blew its `budget_tokens`.
+The card shows the reason and any diagnosis.
+
+**How do I enable auto-claim?** Un-disable the `taskboard-autoclaim` row in
+your overlay (see "Automatic claiming") — and remember it only claims tasks
+that are `open`, spec-complete, dependency-ready, and not `executor: human`.
+
+**Can the model write without asking?** Only if you set `writePolicy: auto`
+in the `taskboard` config. Default `ask` routes every model write through
+approval; `off` makes the board read-only.
 
 ## Compatibility
 
