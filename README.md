@@ -19,6 +19,28 @@ empty, edit loads the card (title, description, priority, executor, deadline):
 
 ![Edit modal](docs/screenshots/edit-modal.png) · ![Create modal](docs/screenshots/create-modal.png)
 
+### v1.10: the eye-opening board (眼前一亮)
+
+Every card carries a **live status ball** (pulsing blue while the agent works,
+breathing red when a human must act), and the activity drawer is a **Task
+Movie** — a chronological timeline with colored status segments:
+
+![Status balls](docs/screenshots/v110-a4-status-ball.png) · ![Task Movie timeline](docs/screenshots/v110-a1-timeline.png)
+
+Completed work comes back as a **certificate of completion** — pass badge,
+per-criterion marks, artifacts one click from the clipboard — and the create
+form **remembers** the project's related experience:
+
+![Certificate of completion](docs/screenshots/v110-a5-certificate.png) · ![Related experience](docs/screenshots/v110-a2-experience.png)
+
+The board shows its **heartbeat** (live pulse bar), empty boards **invite** you
+in, awaiting tasks open a dedicated **human review panel**, and specs can carry
+an **executable verification** command anyone can re-run:
+
+![Live pulse bar](docs/screenshots/v110-b1-pulse-bar.png) · ![First-run onboarding](docs/screenshots/v110-b3-onboarding.png)
+
+![Human review panel](docs/screenshots/v110-b2-review-panel.png) · ![Executable verification](docs/screenshots/v110-c1-verification.png)
+
 ## Why this exists next to `todo_write`
 
 dsh already ships session-scoped work tracking. This plugin does not replace it:
@@ -130,6 +152,7 @@ parallel sessions on one board safe.
 | `acceptance_criteria` | `create`, `update` | Checkable success conditions; the gate to `open` |
 | `context_refs` | `create`, `update` | Files/commits/issues the executor should read (soft hint) |
 | `definition_of_done` | `create`, `update` | Optional closing conditions |
+| `verification` | `create`, `update` | v1.10 C1: executable command that proves the criteria — the dispatched agent must run it and report the real output |
 | `depends_on` | `create`, `update` | Prerequisite task ids/keys; claimable only when each is `done`/`cancelled` |
 | `budget_tokens` | `create`, `update` | Output-token cap for the executing subagent; `null` clears |
 | `context_budget_tokens` | `create`, `update` | Input-context cap for the dispatched subagent (v1.2); a dispatch whose estimated prompt overflows it is refused and the task settles `blocked`; `null` clears |
@@ -174,6 +197,7 @@ The agent's `task_create` / `task_update` accept:
 | `acceptance_criteria` | Checkable success conditions (the gate; the executing subagent verifies each) |
 | `context_refs` | Files / commits / issues the executor should read (soft hint) |
 | `definition_of_done` | Optional closing conditions text |
+| `verification` | v1.10 C1: an executable command the dispatched agent MUST run and report — "the board's own check passes" (surfaced on the card, re-runnable by anyone) |
 
 Creating a task without `acceptance_criteria` lands it in `draft` rather than
 failing; complete the spec (via `task_update` or the API) and move it to
