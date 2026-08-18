@@ -318,6 +318,24 @@ next task's context.
   quoted into the dispatch prompt — the executing agent finally sees the
   human's instruction (bounces carry `bounce: …` automatically).
 
+## Collaboration loop: live push, bounded retry, heartbeat, search (v1.6)
+
+- **Live push.** The board auto-refreshes when anything changes — the server
+  pushes `changed` events (`GET /api/taskboard/events`, SSE) and the panel
+  reloads silently. Another session's or agent's write appears without
+  polling or a manual refresh.
+- **Bounded auto-retry.** The auto-claim row's `autoRetry { maxRetries,
+  backoffMs }` (default off) sends a failed dispatch back to 等待认领 for one
+  more attempt, with a `retry n/max` note that the retried child reads; the
+  backoff window spaces attempts, and the ceiling is a hard stop. The
+  pre-dispatch budget refusal and dispatch timeout stay terminal.
+- **Heartbeat.** While a task is dispatched, the activity stream gains
+  `heartbeat: running <n> min` entries (`heartbeatMs`, default 10 min) — a
+  long-running task visibly stays alive instead of silently wedging.
+- **Search & filter.** A search box (key/title/description) plus priority and
+  label filters narrow the board; they compose with the project and archive
+  views.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
@@ -437,6 +455,7 @@ further action.
 | POST | `/api/taskboard/archive-done` | Sweep the whole done column; returns `{ "archived": n }` (v1.3) |
 | POST | `/api/taskboard/reorder` | Pin a column's order: `{ "refs": [<id\|key>…] }` — the column's FULL list (v1.4) |
 | GET | `/api/taskboard/stats` | Board statistics — ratios, averages, 7-day trend, stuck, cost (v1.5) |
+| GET | `/api/taskboard/events` | Server-sent events: pushes `changed` on every taskboard write (v1.6) |
 
 Create/update also accept `context_budget_tokens` (input-context cap for the
 dispatched subagent; `null` clears it) since v1.2.

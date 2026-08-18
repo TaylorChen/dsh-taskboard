@@ -97,6 +97,35 @@ export function apply(ctx: Context): void {
   // v1.5 S1: board-level statistics — ratios, averages, trend, stuck, cost.
   route(`${BASE}/stats`, 'exact', (_req, res) => json(res, 200, ctx.taskboard.stats()))
 
+  // v1.6 C1: server-sent events — every taskboard write pushes a `changed`
+  // event so open panels refresh without polling. The connection stays open
+  // (the handler never ends the response); the host webserver is a plain node
+  // http server, so streaming works as-is.
+  route(`${BASE}/events`, 'exact', (req, res) => {
+    if (req.method !== 'GET') return json(res, 405, { error: 'use GET for the event stream' })
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    })
+    res.write(': connected\n\n')
+    const onChanged = (change: { domain?: string }): void => {
+      if (change.domain !== 'taskboard') return
+      res.write(`event: changed\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`)
+    }
+    const dispose = ctx.on('domain/changed', onChanged)
+    // SSE spec: a comment line every 25s keeps proxies from closing idle
+    // connections.
+    const heartbeat = setInterval(() => { res.write(': heartbeat\n\n') }, 25_000)
+    heartbeat.unref?.()
+    const cleanup = (): void => {
+      clearInterval(heartbeat)
+      dispose()
+    }
+    req.on('close', cleanup)
+    req.on('error', cleanup)
+  })
+
   // v1.3 D4: one-click sweep of the done column — the panel's 归档全部 button.
   // A governance write like single-task archiving: human-initiated, no approval.
   route(`${BASE}/archive-done`, 'exact', async (req, res) => {

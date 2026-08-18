@@ -47,6 +47,7 @@ import type { DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import z from '@deepseek-ai/schemastery'
 import type {} from './index.ts'
 import type { Task } from './domain.ts'
+import type { TaskboardService } from './service.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -138,6 +139,21 @@ export interface Config {
    * disposes it and settles the task `blocked` with a budget/timeout reason.
    */
   dispatchTimeoutMs: number
+  /**
+   * v1.6 (C2): bounded auto-retry — a failed dispatch goes back to `open`
+   * for one more auto-claim, up to `maxRetries` times, with at least
+   * `backoffMs` between attempts. Off by default (0). The retry is recorded
+   * in the notes (`retry n/max`, quoted into the next dispatch prompt) and
+   * the activity stream, so attempts are auditable. Retry is a budget
+   * decision: each attempt costs another full dispatch.
+   */
+  autoRetry: { maxRetries: number, backoffMs: number }
+  /**
+   * v1.6 (C3): liveness heartbeat — while a task is dispatched, append a
+   * `heartbeat: running <n> min` activity entry every `heartbeatMs` so the
+   * stream proves the execution is alive (not stuck silently). 0 disables.
+   */
+  heartbeatMs: number
 }
 
 /** Loader schema with the deployment's defaults. */
@@ -147,6 +163,11 @@ export const Config: z<Config> = z.object({
   sessionContext: z.boolean().default(false),
   sessionContextLimit: z.number().step(1).min(1).default(5),
   dispatchTimeoutMs: z.number().step(1).min(1).default(30 * 60 * 1000),
+  autoRetry: z.object({
+    maxRetries: z.number().step(1).min(0).default(0),
+    backoffMs: z.number().step(1).min(0).default(30_000),
+  }).default({ maxRetries: 0, backoffMs: 30_000 }),
+  heartbeatMs: z.number().step(1).min(0).default(10 * 60 * 1000),
 })
 
 /** How much task body the dispatch prompt quotes; the agent can re-read via tools. */
@@ -169,6 +190,8 @@ interface Execution {
   readonly run: { id: string, dispose(): Promise<void> }
   readonly startedAt: number
   readonly timer: ReturnType<typeof setTimeout>
+  /** v1.6 C3: liveness heartbeat interval (cleared with `timer`). */
+  readonly heartbeat: ReturnType<typeof setInterval> | undefined
 }
 
 /**
@@ -218,6 +241,41 @@ export function apply(ctx: Context, config: Config): void {
    * dispatch the oldest claimable task. Returns without side effects when
    * anything is not ready.
    */
+  /**
+   * v1.6 C2: settle a failed dispatch, or send it back to `open` for one more
+   * bounded attempt. Only dispatch-attempted failures retry (the pre-dispatch
+   * budget refusal at 258 does not — retrying cannot fix an over-budget
+   * prompt); the timeout path stays terminal (v1.1).
+   */
+  async function settleOrRetry(
+    task: Task, agent: Agent, run: { id: string }, promptText: string,
+    reason: string, diagnosis: string,
+  ): Promise<void> {
+    const max = config.autoRetry.maxRetries
+    if (max > 0 && (task.spec?.acceptanceCriteria.length ?? 0) > 0) {
+      const attempts = retryCount(ctx.taskboard, task.id)
+      if (attempts < max) {
+        try {
+          await ctx.taskboard.markForRetry(task.id, attempts + 1, max, agent.id)
+          ctx.logger.info(
+            `taskboard-autoclaim: retry ${attempts + 1}/${max} of ${task.key ?? task.id} (${reason})`,
+          )
+          return
+        } catch (error) {
+          ctx.logger.warn(
+            `taskboard-autoclaim: retry of ${task.key ?? task.id} failed: ${renderThrown(error)}`,
+          )
+          // fall through to settle
+        }
+      }
+    }
+    await ctx.taskboard.settleDispatch(
+      task.id, agent.id,
+      { kind: 'error', reason, diagnosis },
+      measureChildTokens(run, promptText, ctx),
+    )
+  }
+
   async function drive(state: DriverState): Promise<void> {
     const { agent } = state
     if (!readyToClaim(agent)) return
@@ -234,10 +292,14 @@ export function apply(ctx: Context, config: Config): void {
     const workspaceId = await ctx.taskboard.workspaceIdOfCwd(cwd)
     // v0.7 W2: only dependency-ready tasks are candidates; v0.9 W1: `human`
     // tasks are never auto-claimed.
+    // v1.6 C2: a task retried too recently is not a candidate — the failed
+    // attempt needs its backoff window before the next full dispatch.
+    const now = Date.now()
     const scoped = ctx.taskboard.list({ status: 'open' }).filter(task =>
       (workspaceId === undefined || task.workspaceId === null || task.workspaceId === workspaceId)
       && ctx.taskboard.isReady(task.id)
-      && task.executor !== 'human')
+      && task.executor !== 'human'
+      && !inRetryBackoff(ctx.taskboard, task.id, config.autoRetry.backoffMs, now))
     const candidate = selectClaimCandidate(scoped)
     if (candidate === undefined) return
 
@@ -284,6 +346,15 @@ export function apply(ctx: Context, config: Config): void {
           run,
           startedAt: Date.now(),
           timer: setTimeout(() => { void timeoutExecution(executions, ctx, config, claimed.id) }, config.dispatchTimeoutMs),
+          // v1.6 C3: liveness beat while the child runs (unref'd, cleared with
+          // the timeout timer at settle/cancel/timeout).
+          heartbeat: config.heartbeatMs > 0
+            ? setInterval(() => {
+              void ctx.taskboard.heartbeat(claimed.id, agent.id).catch(error => ctx.logger.warn(
+                `taskboard-autoclaim: heartbeat of ${claimed.key ?? claimed.id} failed: ${renderThrown(error)}`,
+              ))
+            }, config.heartbeatMs)
+            : undefined,
         }
         execution.timer.unref?.()
         executions.set(claimed.id, execution)
@@ -299,6 +370,7 @@ export function apply(ctx: Context, config: Config): void {
               // off in_progress, or timed out), do not settle a second time.
               if (executions.delete(claimed.id) === false) return
               clearTimeout(execution.timer)
+              if (execution.heartbeat !== undefined) clearInterval(execution.heartbeat)
               if (result.stopReason === 'completed') {
                 const report = isTaskEvidence(result.structured)
                 if (report !== undefined) {
@@ -316,24 +388,25 @@ export function apply(ctx: Context, config: Config): void {
                   }, measureChildTokens(run, promptText, ctx))
                   return
                 }
-                // No valid structured capture: no half-evidence — settle as error.
-                await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
-                  kind: 'error',
-                  reason: `subagent ${run.id} finished without a structured report`,
-                  diagnosis: tailOf(result.output),
-                }, measureChildTokens(run, promptText, ctx))
+                // No valid structured capture: no half-evidence — settle as
+                // error (or retry, v1.6 C2).
+                await settleOrRetry(
+                  claimed, agent, run, promptText,
+                  `subagent ${run.id} finished without a structured report`,
+                  tailOf(result.output),
+                )
                 return
               }
               // v0.7 W3: a child that hit its token ceiling is a budget
               // overrun, reported distinctly from a plain failure.
               const budgetOverrun = result.stopReason === 'max-tokens'
-              await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
-                kind: 'error',
-                reason: budgetOverrun
+              await settleOrRetry(
+                claimed, agent, run, promptText,
+                budgetOverrun
                   ? `subagent ${run.id} exceeded the task's token budget`
                   : `subagent ${run.id} ended with ${result.stopReason}`,
-                diagnosis: tailOf(result.output),
-              }, measureChildTokens(run, promptText, ctx))
+                tailOf(result.output),
+              )
             } catch (error) {
               ctx.logger.warn(
                 `taskboard-autoclaim: could not settle dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
@@ -345,11 +418,12 @@ export function apply(ctx: Context, config: Config): void {
             try {
               if (executions.delete(claimed.id) === false) return
               clearTimeout(execution.timer)
-              await ctx.taskboard.settleDispatch(claimed.id, agent.id, {
-                kind: 'error',
-                reason: `subagent ${run.id} failed to run`,
-                diagnosis: renderThrown(error),
-              }, measureChildTokens(run, promptText, ctx))
+              if (execution.heartbeat !== undefined) clearInterval(execution.heartbeat)
+              await settleOrRetry(
+                claimed, agent, run, promptText,
+                `subagent ${run.id} failed to run`,
+                renderThrown(error),
+              )
             } catch (failure) {
               ctx.logger.warn(
                 `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
@@ -437,6 +511,7 @@ export function apply(ctx: Context, config: Config): void {
       if (execution === undefined) return
       executions.delete(change.key)
       clearTimeout(execution.timer)
+              if (execution.heartbeat !== undefined) clearInterval(execution.heartbeat)
       void execution.run.dispose().catch(error => ctx.logger.warn(
         `taskboard-autoclaim: could not dispose cancelled execution of task ${change.key}: ${renderThrown(error)}`,
       ))
@@ -446,7 +521,10 @@ export function apply(ctx: Context, config: Config): void {
     })
     return () => {
       for (const state of states.values()) state.stopping = true
-      for (const execution of executions.values()) clearTimeout(execution.timer)
+      for (const execution of executions.values()) {
+        clearTimeout(execution.timer)
+        if (execution.heartbeat !== undefined) clearInterval(execution.heartbeat)
+      }
       states.clear()
       executions.clear()
     }
@@ -599,6 +677,35 @@ function measureChildTokens(run: { id: string }, promptText: string, ctx: Contex
     // fall through to the estimate
   }
   return estimateInputTokens(promptText)
+}
+
+/**
+ * v1.6 C2: how many `retry n/max` notes a task already carries — the
+ * authoritative attempt counter (the retry note is also in the dispatch
+ * prompt, so the next child knows how many tries came before).
+ */
+function retryCount(taskboard: TaskboardService, taskId: string): number {
+  let count = 0
+  for (const entry of taskboard.activityOf(taskId)) {
+    if (entry.action === 'noted' && (entry.to ?? '').startsWith('retry ')) count += 1
+  }
+  return count
+}
+
+/**
+ * v1.6 C2: honor the retry backoff — skip an open task whose newest activity
+ * entry is a retry note newer than `backoffMs` ago (the failed attempt needs
+ * room before the next one is worth a full dispatch).
+ */
+function inRetryBackoff(
+  taskboard: TaskboardService, taskId: string, backoffMs: number, now: number,
+): boolean {
+  if (backoffMs <= 0) return false
+  const newest = taskboard.activityOf(taskId)[0]
+  return newest !== undefined
+    && newest.action === 'noted'
+    && (newest.to ?? '').startsWith('retry ')
+    && newest.at > now - backoffMs
 }
 
 /** The dispatch prompt handed to a background subagent (W2). */

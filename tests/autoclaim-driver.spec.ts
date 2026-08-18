@@ -152,6 +152,8 @@ function rig(
   options: {
     workspaceCwd?: string, withSubagents?: boolean, sessionContext?: boolean,
     dispatchTimeoutMs?: number,
+    autoRetry?: { maxRetries: number, backoffMs: number },
+    heartbeatMs?: number,
   } = {},
 ): Rig & { subagents: ReturnType<typeof fakeSubagents>, injections: unknown[] } {
   const store = fakeStore()
@@ -162,7 +164,7 @@ function rig(
     maxTasks: 100,
     keyPrefix: 'TB',
     activityRetentionPerTask: 50,
-    now: () => ++clock,
+    now: () => Date.now(),
     newId: () => `id-${++seq}`,
   })
   if (options.workspaceCwd !== undefined) {
@@ -185,6 +187,8 @@ function rig(
     sessionContext: options.sessionContext ?? false,
     sessionContextLimit: 5,
     dispatchTimeoutMs: options.dispatchTimeoutMs ?? 3_600_000,
+    autoRetry: options.autoRetry ?? { maxRetries: 0, backoffMs: 30_000 },
+    heartbeatMs: options.heartbeatMs ?? 0,
   })
   const actor: Actor = { kind: 'human', via: 'panel' }
   return {
@@ -547,6 +551,103 @@ describe('token usage recording (v1.5 S2)', () => {
     const settled = service.get(task.key as string)
     // The rig's agents.get knows no child id -> deterministic estimate, > 0.
     expect(settled?.tokensUsed).toBeGreaterThan(0)
+  })
+})
+
+describe('bounded auto-retry (v1.6 C2)', () => {
+  it('sends a failed dispatch back to open with a retry note, within the limit', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, {
+      withSubagents: true, autoRetry: { maxRetries: 1, backoffMs: 0 },
+    })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Flaky', acceptanceCriteria: ['w'] }, actor)
+
+    emitIdle()
+    await settle()
+    subagents.settleNext('error')
+    await settle()
+
+    const retried = service.get(task.key as string)
+    expect(retried?.status).toBe('open')
+    expect(retried?.claimedBySessionId).toBeNull()
+    expect(retried?.notes).toContain('retry 1/1')
+
+    // Second failure hits the ceiling -> blocked permanently.
+    emitIdle()
+    await settle()
+    subagents.settleNext('error')
+    await settle()
+    const settled = service.get(task.key as string)
+    expect(settled?.status).toBe('blocked')
+    expect(settled?.blockedReason).toContain('ended with error')
+  })
+
+  it('leaves completed dispatches untouched when auto-retry is on', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, {
+      withSubagents: true, autoRetry: { maxRetries: 3, backoffMs: 0 },
+    })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Solid', acceptanceCriteria: ['w'] }, actor)
+
+    emitIdle()
+    await settle()
+    subagents.settleNext('completed', {
+      criteria: [{ criterion: 'w', met: true, note: '' }], artifacts: [], summary: 'ok',
+    })
+    await settle()
+
+    const settled = service.get(task.key as string)
+    expect(settled?.status).toBe('awaiting_human')
+    expect(settled?.notes).toBe('')
+  })
+
+  it('honours the backoff window before re-claiming a retried task', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, {
+      withSubagents: true, autoRetry: { maxRetries: 3, backoffMs: 60_000 },
+    })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Cooldown', acceptanceCriteria: ['w'] }, actor)
+
+    emitIdle()
+    await settle()
+    subagents.settleNext('error')
+    await settle()
+    expect(service.get(task.key as string)?.status).toBe('open')
+
+    // Within the backoff window the task is not a candidate.
+    emitIdle()
+    await settle()
+    expect(subagents.starts).toHaveLength(1)
+    expect(service.get(task.key as string)?.claimedBySessionId).toBeNull()
+  })
+})
+
+describe('liveness heartbeat (v1.6 C3)', () => {
+  it('appends heartbeat activity entries while dispatched and stops at settle', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, {
+      withSubagents: true, heartbeatMs: 30,
+    })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Alive', acceptanceCriteria: ['w'] }, actor)
+    emitIdle()
+    await settle()
+    expect(subagents.starts).toHaveLength(1)
+
+    // Wait past two heartbeat intervals while the child is still running.
+    await new Promise(resolve => setTimeout(resolve, 90))
+    const during = service.activityOf(task.key as string)
+      .filter(entry => entry.action === 'noted' && (entry.to ?? '').startsWith('heartbeat'))
+    expect(during.length).toBeGreaterThanOrEqual(1)
+
+    subagents.settleNext('completed', {
+      criteria: [{ criterion: 'w', met: true, note: '' }], artifacts: [], summary: 'ok',
+    })
+    await settle()
+    await new Promise(resolve => setTimeout(resolve, 90))
+    const after = service.activityOf(task.key as string)
+      .filter(entry => entry.action === 'noted' && (entry.to ?? '').startsWith('heartbeat'))
+    // No new beats after settle.
+    expect(after.length).toBe(during.length)
   })
 })
 

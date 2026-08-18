@@ -4,6 +4,38 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.6.0] — 2025-08-17
+
+Collaboration loop (from the v1.6 plan): the board pushes its changes, failed
+dispatches retry on a budget, running tasks prove they are alive, and cards
+can be found.
+
+### Added
+
+- **Live push (C1)**: `GET /api/taskboard/events` (SSE) feeds `changed` events
+  from `domain/changed`; the panel subscribes and silently reloads (debounced)
+  — another session's or agent's write appears without polling.
+- **Bounded auto-retry (C2)**: autoclaim `autoRetry { maxRetries, backoffMs }`
+  (default off) sends a failed dispatch back to `open` via the system write
+  `markForRetry` — releasing the claim, appending `retry n/max` to notes (read
+  by the retried child) and to the activity stream, and honoring a backoff
+  window before re-claiming. Pre-dispatch budget refusal and dispatch timeout
+  stay terminal.
+- **Heartbeat (C3)**: `heartbeatMs` (default 10 min) appends
+  `heartbeat: running <n> min` activity entries while a child runs, cleared
+  with the dispatch timer — liveness is visible, not assumed.
+- **Search & filter (C4)**: panel search (key/title/description) and
+  priority/label filters over the loaded board, composing with project and
+  archive views, with a distinct "no match" empty state.
+- Real E2E: `tests/e2e/v16-sse.mjs` (SSE: stream opens, a write pushes
+  `changed`) and `tests/e2e/v16-e2e.mjs` (patched autoRetry/heartbeat config
+  boots, a real dispatch settles sanely with tokensUsed and heartbeat notes).
+
+### Migration
+
+None — additive autoclaim config (`autoRetry`, `heartbeatMs`, both off/low by
+default) and a new read-only events route.
+
 ## [1.5.0] — 2025-08-17
 
 Metrics and the collaboration loop (from the v1.5 plan): the board measures

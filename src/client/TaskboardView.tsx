@@ -207,26 +207,53 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [statsOpen, setStatsOpen] = useState(false)
   const [stats, setStats] = useState<BoardStats | null>(null)
   const [statsError, setStatsError] = useState<string | undefined>(undefined)
+  // v1.6 C4: search + single-select filters (label/priority), panel-side.
+  const [searchQuery, setSearchQuery] = useState('')
+  const [filterPriority, setFilterPriority] = useState('all')
+  const [filterLabel, setFilterLabel] = useState('all')
+
+  /** Fetch the board without touching `busy`; shared by load (busy) and the
+   * v1.6 C1 SSE auto-refresh (silent). */
+  const fetchBoard = useCallback(async (): Promise<void> => {
+    // v1.3 D1: the archive is the same board, one query away; v1.4 E1: the
+    // project focus composes with it.
+    const params = new URLSearchParams()
+    if (archivedView) params.set('archived', 'true')
+    if (projectFilter !== 'all') params.set('project', projectFilter)
+    const qs = params.toString()
+    const response = await fetch(`/api/taskboard/board${qs === '' ? '' : `?${qs}`}`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    setBoard(await response.json() as BoardPayload)
+  }, [archivedView, projectFilter])
 
   const load = useCallback(async (): Promise<void> => {
     setBusy(true)
     try {
-      // v1.3 D1: the archive is the same board, one query away; v1.4 E1: the
-      // project focus composes with it.
-      const params = new URLSearchParams()
-      if (archivedView) params.set('archived', 'true')
-      if (projectFilter !== 'all') params.set('project', projectFilter)
-      const qs = params.toString()
-      const response = await fetch(`/api/taskboard/board${qs === '' ? '' : `?${qs}`}`)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      setBoard(await response.json() as BoardPayload)
+      await fetchBoard()
       setError(undefined)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(false)
     }
-  }, [archivedView, projectFilter])
+  }, [fetchBoard])
+
+  // v1.6 C1: the server pushes `changed` on every taskboard write; reload the
+  // board (debounced) so another session's or agent's change appears without
+  // polling. EventSource reconnects automatically on drop.
+  useEffect(() => {
+    const source = new EventSource('/api/taskboard/events')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const reload = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => { void fetchBoard().catch(() => {}) }, 500)
+    }
+    source.addEventListener('changed', reload)
+    return () => {
+      if (timer !== undefined) clearTimeout(timer)
+      source.close()
+    }
+  }, [fetchBoard])
 
   useEffect(() => { void load() }, [load])
 
@@ -646,17 +673,68 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         <div style={{ ...surface, padding: 24, fontSize: 13, opacity: 0.7, textAlign: 'center' }}>{t('empty')}</div>
       )}
 
-      {board !== undefined && board.tasks.length > 0 && (
-        <div style={{ display: 'flex', gap: 12, overflowX: 'auto', flex: 1, alignItems: 'flex-start' }}>
+      {/* v1.6 C4: search + filters — applied client-side over the loaded
+          board, composing with the project/archive views. */}
+      {board !== undefined && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            value={searchQuery}
+            placeholder={t('filter.search')}
+            onChange={event => { setSearchQuery(event.target.value) }}
+            style={{ ...control, fontSize: 12, flex: 1, minWidth: 160 }}
+          />
+          <select
+            value={filterPriority}
+            onChange={event => { setFilterPriority(event.target.value) }}
+            style={{ ...control, fontSize: 12, cursor: 'pointer' }}
+          >
+            <option value="all">{t('filter.allPriority')}</option>
+            {PRIORITIES.map(priority => <option key={priority} value={priority}>{priority}</option>)}
+          </select>
+          <select
+            value={filterLabel}
+            onChange={event => { setFilterLabel(event.target.value) }}
+            style={{ ...control, fontSize: 12, cursor: 'pointer' }}
+          >
+            <option value="all">{t('filter.allLabels')}</option>
+            {[...new Set(board.tasks.flatMap(task => task.labels))].sort().map(label => (
+              <option key={label} value={label}>{label}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {board !== undefined && (() => {
+        const q = searchQuery.trim().toLowerCase()
+        const visible = board.tasks.filter(task => {
+          if (q !== ''
+            && !(task.key ?? '').toLowerCase().includes(q)
+            && !task.title.toLowerCase().includes(q)
+            && !task.body.toLowerCase().includes(q)) return false
+          if (filterPriority !== 'all' && task.priority !== filterPriority) return false
+          if (filterLabel !== 'all' && !task.labels.includes(filterLabel)) return false
+          return true
+        })
+        const filtering = q !== '' || filterPriority !== 'all' || filterLabel !== 'all'
+        return (
+          <>
+            {board.tasks.length > 0 && visible.length === 0 && (
+              <div style={{ ...surface, padding: 16, fontSize: 13, opacity: 0.7, textAlign: 'center' }}>{t('filter.noMatch')}</div>
+            )}
+            {visible.length === 0 && !filtering && (
+              <div style={{ ...surface, padding: 24, fontSize: 13, opacity: 0.7, textAlign: 'center' }}>{t('empty')}</div>
+            )}
+            {visible.length > 0 && (
+      <div style={{ display: 'flex', gap: 12, overflowX: 'auto', flex: 1, alignItems: 'flex-start' }}>
           {COLUMNS.map((column) => {
             // v1.4 E3: while a drag is live IN this column, render the true
             // storage order — the overdue float is a render hint, and the
             // reorder must not bake it into sortOrder.
             const draggingHere = dragId !== null
-              && board.tasks.some(task => task.id === dragId && task.status === column)
+              && visible.some(task => task.id === dragId && task.status === column)
             // v1.2 B3: overdue cards float to the top of their column (stable
             // sort keeps the storage order for everything else).
-            const tasks = board.tasks
+            const tasks = visible
               .filter(task => task.status === column)
               .sort((a, b) => draggingHere ? 0 : overdueRank(a, now) - overdueRank(b, now))
             const blockedColumn = column === 'blocked'
@@ -1094,7 +1172,10 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
             )
           })}
         </div>
-      )}
+            )}
+          </>
+        )
+      })()}
 
       {/* W3: the activity drawer, overlaying the board's right side. The
           panel's `surface` tint is far too transparent for an overlay — text

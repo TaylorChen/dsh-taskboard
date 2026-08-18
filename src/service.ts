@@ -860,6 +860,70 @@ export class TaskboardService {
   }
 
   /**
+   * v1.6 C3: a liveness beat for a dispatched task — appends a `noted`
+   * activity entry (`heartbeat: running <n> min`) WITHOUT touching the task,
+   * so the activity stream proves the execution is alive between settle
+   * points. A SYSTEM write (the driver's configured automation), like
+   * `markForRetry`.
+   * @param ref - short key or full id.
+   * @param driver - the driver's session id (the actor label).
+   */
+  async heartbeat(ref: TaskRef, driver: string): Promise<void> {
+    const task = this.require(ref)
+    const at = this.now()
+    const minutes = Math.max(1, Math.round((at - task.updatedAt) / 60_000))
+    await this.recordActivityLabeled(
+      task.id as TaskId,
+      'noted',
+      null,
+      `heartbeat: running ${minutes} min`,
+      { actor: 'agent', actorLabel: driver },
+      at,
+    )
+  }
+
+  /**
+   * v1.6 C2: send a failed dispatch back to `open` for one more auto-claim —
+   * bounded auto-retry. A SYSTEM write like `autoClaim` (it is the deployment's
+   * configured automation, not the model asking): it refuses only under
+   * `writePolicy: 'off'`, never asks a human per attempt. The retry is
+   * recorded both in the notes (`retry <attempt>/<max>`, which the next
+   * dispatch prompt quotes) and as a `noted` activity entry, so attempts are
+   * auditable and countable. The claim is released (leaving in_progress).
+   * @param ref - short key or full id.
+   * @param attempt - the attempt number this retry starts (1-based).
+   * @param max - the configured retry ceiling (for the note).
+   * @returns the stored task.
+   */
+  async markForRetry(ref: TaskRef, attempt: number, max: number, driver: string): Promise<Task> {
+    const current = this.require(ref)
+    if (this.deps.writePolicy === 'off') {
+      throw new TaskboardError('write-denied', "writePolicy is 'off': retry refused")
+    }
+    const note = `retry ${attempt}/${max}`
+    const at = this.now()
+    const next: Task = {
+      ...current,
+      status: 'open',
+      blockedReason: null,
+      claimedBySessionId: null,
+      notes: current.notes === '' ? note : `${current.notes}\n${note}`,
+      revision: current.revision + 1,
+      updatedAt: at,
+    }
+    await this.deps.store.putTask(next)
+    await this.recordActivityLabeled(
+      current.id as TaskId,
+      'noted',
+      null,
+      note,
+      { actor: 'agent', actorLabel: driver },
+      at,
+    )
+    return next
+  }
+
+  /**
    * Soft-archive a done task (v1.2 C1): it leaves the active board view but is
    * never deleted. A governance write, not a data change — no approval gate
    * (archiving is reversible and touches only `archivedAt`).

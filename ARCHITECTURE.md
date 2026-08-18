@@ -668,3 +668,40 @@ human-side only — a bounce reason or steering note in `notes` never appeared
 in the dispatch prompt, so the child could not act on it. The dispatch prompt
 now quotes the notes (bounded, `clip` 1000 chars); because bounces land in
 notes as `bounce: …`, a bounced task's re-dispatch automatically carries why.
+
+**54. v1.6 (C1): the board pushes its own changes.** `GET /api/taskboard/events`
+is a server-sent-events stream fed by the same `domain/changed` event the
+auto-claim driver already consumes — every taskboard write pushes `changed`,
+and open panels reload the board (debounced 500ms) instead of polling. The
+reload is silent (`fetchBoard` does not flip `busy`, so a push never flashes
+the refresh button); EventSource reconnects automatically. The route handler
+never ends the response; the host webserver is a plain node http server, so
+streaming works as-is, with the SSE 25s heartbeat comment keeping proxies from
+closing idle connections.
+
+**55. v1.6 (C2): failure is a budget decision, and retry is bounded.** The
+auto-claim row's `autoRetry { maxRetries, backoffMs }` (default off) sends a
+failed dispatch back to `open` for one more attempt instead of settling
+`blocked`. `markForRetry` is a SYSTEM write (same standing as `autoClaim`): it
+releases the claim, appends `retry n/max` to the notes — which the next
+dispatch prompt quotes, so the retried child knows the history — and records a
+`noted` entry, making attempts auditable and countable. `retryCount` counts
+those notes; the candidate scan skips a task whose newest entry is a retry
+note within `backoffMs` (a full dispatch per attempt is the cost, so the
+window matters). Two failure paths deliberately do NOT retry: the pre-dispatch
+budget refusal (retrying cannot fix an over-budget prompt) and the timeout
+path (v1.1, terminal).
+
+**56. v1.6 (C3): a dispatched task proves it is alive.** While a child runs,
+the driver beats a `heartbeatMs` interval (default 10 min) that appends a
+`noted` entry `heartbeat: running <n> min` — the activity stream shows the
+execution is progressing, not silently wedged, between the dispatch and the
+settle. The interval is unref'd and cleared wherever the timeout timer is, so
+settle/cancel/timeout stop the beats. The heartbeat is a system write like
+`markForRetry`.
+
+**57. v1.6 (C4): find the card.** The panel gains a search box (key/title/
+body substring) and single-select priority/label filters, applied client-side
+over the loaded board — composing with the project and archive views — with a
+"no match" empty state distinct from a truly empty board. Server-side search
+stays future work; the board is small enough for client filtering.
