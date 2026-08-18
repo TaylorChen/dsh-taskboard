@@ -40,6 +40,7 @@ function fakeStore(): TaskboardStore & { tasks: Map<string, Task> } {
     listProjects: () => [...projects.values()],
     getProject: (id: ProjectId) => projects.get(id),
     putProject: async (project: Project) => { projects.set(project.id, project) },
+    deleteProject: async (id: ProjectId) => projects.delete(id),
     listActivity: (taskId: TaskId) => [...activity.values()].filter(entry => entry.taskId === taskId),
     putActivity: async (entry: Activity) => { activity.set(entry.id, entry) },
     deleteActivity: async (id: string) => activity.delete(id as TaskId),
@@ -339,6 +340,7 @@ describe('short ids', () => {
         contextBudgetTokens: null,
       sortOrder: null,
       tokensUsed: null,
+      nextTask: null,
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -540,6 +542,7 @@ describe('auto-claim', () => {
       contextBudgetTokens: null,
       sortOrder: null,
       tokensUsed: null,
+      nextTask: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -715,6 +718,7 @@ describe('task spec (v0.5 L2)', () => {
       contextBudgetTokens: null,
       sortOrder: null,
       tokensUsed: null,
+      nextTask: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -1070,6 +1074,92 @@ describe('token usage recording (v1.5 S2)', () => {
       evidence: { criteria: [{ criterion: 'b', met: true, note: '' }], artifacts: [], summary: 'ok' },
     })
     expect(unmeasured?.tokensUsed).toBeNull()
+  })
+})
+
+describe('task chaining (v1.7 P3)', () => {
+  it('auto-creates the chained task on done and clears the parent spec', async () => {
+    const { service, actor } = build('auto')
+    const parent = await service.create({
+      projectId: PROJECT_ID, title: 'Parent', acceptanceCriteria: ['p'], status: 'open',
+      nextTask: { title: 'Child', body: 'next step', acceptanceCriteria: ['c'] },
+    }, actor)
+    expect(parent.nextTask?.title).toBe('Child')
+
+    const done = await service.update(parent.key as string, { status: 'done' }, actor)
+    expect(done.nextTask).toBeNull()
+    expect(done.notes).toContain('chained →')
+
+    const children = service.list().filter(task => task.title === 'Child')
+    expect(children).toHaveLength(1)
+    expect(children[0]?.status).toBe('open')
+    expect(children[0]?.projectId).toBe(PROJECT_ID)
+    expect(children[0]?.spec?.acceptanceCriteria).toEqual(['c'])
+  })
+
+  it('chains only once — a repeat done-transition never re-creates', async () => {
+    const { service, actor } = build('auto')
+    const parent = await service.create({
+      projectId: PROJECT_ID, title: 'Once', acceptanceCriteria: ['p'], status: 'open',
+      nextTask: { title: 'Only child', acceptanceCriteria: ['c'] },
+    }, actor)
+    await service.update(parent.key as string, { status: 'done' }, actor)
+    await service.update(parent.key as string, { status: 'open' }, actor)
+    await service.update(parent.key as string, { status: 'done' }, actor)
+
+    expect(service.list().filter(task => task.title === 'Only child')).toHaveLength(1)
+  })
+
+  it('lands in draft when the chain spec has no criteria', async () => {
+    const { service, actor } = build('auto')
+    const parent = await service.create({
+      projectId: PROJECT_ID, title: 'Draft chain', acceptanceCriteria: ['p'], status: 'open',
+      nextTask: { title: 'Draft child', acceptanceCriteria: [] },
+    }, actor)
+    await service.update(parent.key as string, { status: 'done' }, actor)
+    const child = service.list().find(task => task.title === 'Draft child')
+    expect(child?.status).toBe('draft')
+  })
+})
+
+describe('project lifecycle (v1.7 P1)', () => {
+  it('creates, renames, and removes an empty project', async () => {
+    const { service, actor } = build('auto')
+    const created = await service.createProject('Release')
+    expect(created.name).toBe('Release')
+    expect(service.projects().some(project => project.id === created.id)).toBe(true)
+
+    const renamed = await service.renameProject(created.id, 'Ship')
+    expect(renamed.name).toBe('Ship')
+
+    const removed = await service.removeProject(created.id)
+    expect(removed.removed).toBe(true)
+    expect(service.projects().some(project => project.id === created.id)).toBe(false)
+  })
+
+  it('refuses empty/duplicate names and removing a project that holds tasks', async () => {
+    const { service, actor } = build('auto')
+    await expect(service.createProject('  ')).rejects.toThrow(/must not be empty/)
+    await service.createProject('Dupe')
+    await expect(service.createProject('Dupe')).rejects.toThrow(/already exists/)
+
+    await service.create({ projectId: PROJECT_ID, title: 'Held', acceptanceCriteria: ['h'] }, actor)
+    const inbox = service.projects().find(project => project.id === PROJECT_ID)
+    await expect(service.removeProject(inbox?.id as string))
+      .rejects.toThrow(/has 1 task/)
+  })
+
+  it('migrates a task to another project', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({ projectId: PROJECT_ID, title: 'Mover', acceptanceCriteria: ['m'] }, actor)
+    const other = await service.createProject('Other')
+
+    const moved = await service.update(task.key as string, { projectId: other.id }, actor)
+    expect(moved.projectId).toBe(other.id)
+    expect(service.list({ projectId: other.id }).map(t => t.id)).toContain(task.id)
+
+    await expect(service.update(task.key as string, { projectId: 'no-such' }, actor))
+      .rejects.toThrow(/does not exist/)
   })
 })
 

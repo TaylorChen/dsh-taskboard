@@ -69,7 +69,8 @@ function task(id: string, revision: number): Task {
     spec: null, evidence: null, executor: 'any', dueAt: null, notes: '',
     archivedAt: null, contextBudgetTokens: null,
         sortOrder: null,
-        tokensUsed: null, dependsOn: [], budgetTokens: null,
+        tokensUsed: null,
+        nextTask: null, dependsOn: [], budgetTokens: null,
     createdAt: 0,
   }
 }

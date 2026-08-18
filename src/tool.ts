@@ -19,8 +19,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import type {} from './index.ts'
-import type { Actor } from './service.ts'
-import { TASK_EXECUTORS, TASK_PRIORITIES, TASK_STATUSES, type Task } from './domain.ts'
+import type { Actor, NextTaskInput } from './service.ts'
+import { TASK_EXECUTORS, TASK_PRIORITIES, TASK_STATUSES,  type Task } from './domain.ts'
 import { DEFAULT_LIST_LIMIT } from './defaults.ts'
 
 /** Cordis plugin name. */
@@ -186,6 +186,11 @@ export function apply(ctx: Context, config: Config): void {
       },
       due_at: { type: 'integer', description: 'Planned deadline as epoch milliseconds; omit for none' },
       notes: { type: 'string', description: 'Initial process notes' },
+      next_task: {
+        type: 'object',
+        additionalProperties: true,
+        description: "v1.7: the task chained on this one's completion — { title, body?, acceptanceCriteria[], contextRefs?, definitionOfDone? }",
+      },
       context_budget_tokens: {
         type: 'integer',
         description: "Input-context budget for the executing subagent; a dispatch whose prompt is estimated to exceed it is refused and the task settles blocked. null clears it",
@@ -235,6 +240,7 @@ export function apply(ctx: Context, config: Config): void {
         ...args.executor === undefined ? {} : { executor: args.executor },
         ...args.due_at === undefined ? {} : { dueAt: args.due_at },
         ...args.notes === undefined ? {} : { notes: args.notes },
+        ...args.next_task === undefined ? {} : { nextTask: args.next_task as unknown as NextTaskInput },
         ...args.context_budget_tokens === undefined
           ? {} : { contextBudgetTokens: args.context_budget_tokens },
         // v0.4 W1: an unbound task binds to the workspace owning this cwd
@@ -286,6 +292,11 @@ export function apply(ctx: Context, config: Config): void {
       },
       due_at: { type: 'integer', description: 'Replace the deadline as epoch milliseconds; null clears it' },
       note: { type: 'string', description: 'Append one process note (never overwrites)' },
+      next_task: {
+        type: 'object',
+        additionalProperties: true,
+        description: "v1.7: replace the chained task spec; null clears it — { title, body?, acceptanceCriteria[], contextRefs?, definitionOfDone? }",
+      },
       context_budget_tokens: {
         type: 'integer',
         description: "Replace the input-context budget; null clears it",
@@ -321,6 +332,7 @@ export function apply(ctx: Context, config: Config): void {
         ...args.executor === undefined ? {} : { executor: args.executor },
         ...args.due_at === undefined ? {} : { dueAt: args.due_at },
         ...args.note === undefined ? {} : { note: args.note },
+        ...args.next_task === undefined ? {} : { nextTask: args.next_task as unknown as NextTaskInput },
         ...args.context_budget_tokens === undefined
           ? {} : { contextBudgetTokens: args.context_budget_tokens },
         ...args.expected_revision === undefined ? {} : { expectedRevision: args.expected_revision },

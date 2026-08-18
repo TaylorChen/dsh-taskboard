@@ -705,3 +705,28 @@ body substring) and single-select priority/label filters, applied client-side
 over the loaded board — composing with the project and archive views — with a
 "no match" empty state distinct from a truly empty board. Server-side search
 stays future work; the board is small enough for client filtering.
+
+**58. v1.7 (P1): projects become a first-class lifecycle.** `createProject` /
+`renameProject` / `removeProject` (governance writes like archiving — no
+approval gate) make the project container real, fixing the v1.4 dead end where
+`task_projects` could list but never create. `removeProject` refuses a
+non-empty project (`invalid-input` with the count) so deletion never orphans
+tasks. Tasks migrate via `UpdateTaskInput.projectId` (validated up front); the
+routes accept both `project_id` and `projectId`, and the panel creates projects
+from the header and migrates from the task form.
+
+**59. v1.7 (P2): the drawer is a thread.** The activity drawer now renders the
+previously-unhandled `noted` / `completed` / `dispatched` actions, with a
+composer that appends a comment (a `note`, gated, revision-guarded). A comment
+lands in the notes, which the next dispatch prompt quotes — so the thread is
+not decoration: a human's mid-thread instruction reaches the executing agent,
+and the agent's retry/heartbeat/evidence entries are the other side of the
+same thread.
+
+**60. v1.7 (P3): completion chains the next task.** `nextTask` (additive,
+default null) carries a child spec; a `done` transition auto-creates the child
+(open with criteria, draft without) in the parent's project and workspace,
+clears the parent's spec, and notes `chained → <key>`. Chaining is a system
+write (no gate) and idempotent — clearing `nextTask` means a repeat
+confirm cannot re-create. `dependsOn` stays a BLOCKING relationship; `nextTask`
+is the TRIGGERING one — the board now expresses pipelines.

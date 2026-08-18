@@ -34,6 +34,7 @@ function fakeStore(): TaskboardStore {
     listProjects: () => [...projects.values()],
     getProject: (id: ProjectId) => projects.get(id),
     putProject: async (project: Project) => { projects.set(project.id, project) },
+    deleteProject: async (id: ProjectId) => projects.delete(id),
     listActivity: (taskId: TaskId) => [...activity.values()].filter(a => a.taskId === taskId),
     putActivity: async (entry) => { activity.set(entry.id, entry) },
     deleteActivity: async (id) => activity.delete(id),

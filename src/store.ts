@@ -190,6 +190,10 @@ export function createStore(domain: TaskboardDomain, medium?: MediumGuard): Task
       await assertMediumUnchanged()
       await projects.put(project.id as ProjectId, project)
     },
+    deleteProject: async (id: ProjectId) => {
+      await assertMediumUnchanged()
+      return projects.delete(id)
+    },
     listActivity: (taskId: TaskId) => [...activity.entries()]
       .map(([, entry]) => entry)
       .filter(entry => entry.taskId === taskId),

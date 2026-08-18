@@ -28,7 +28,8 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from './index.ts'
 import { TaskboardError } from './errors.ts'
 import {
-  TASK_PRIORITIES, TASK_STATUSES,
+  TASK_PRIORITIES, TASK_STATUSES, nextTaskSpecSchema,
+  type NextTaskSpec,
   type TaskExecutor, type TaskPriority, type TaskStatus,
 } from './domain.ts'
 import type { Actor } from './service.ts'
@@ -93,6 +94,47 @@ export function apply(ctx: Context): void {
   })
 
   route(`${BASE}/export`, 'exact', (_req, res) => json(res, 200, ctx.taskboard.exportAll()))
+
+  // v1.7 P1: project lifecycle — create, rename, remove (empty only).
+  // Governance writes like archiving: human-initiated, no approval.
+  route(`${BASE}/projects`, 'exact', async (req, res) => {
+    if (req.method !== 'POST') return json(res, 405, { error: 'use POST to create a project' })
+    const body = await readJsonBody(req, res)
+    if (body === undefined) return
+    await guard(res, async () => {
+      const name = typeof (body as Record<string, unknown>).name === 'string'
+        ? (body as Record<string, unknown>).name as string
+        : ''
+      const project = await ctx.taskboard.createProject(name)
+      json(res, 201, project)
+    })
+  })
+
+  route(`${BASE}/projects`, 'prefix', async (req, res) => {
+    const url = new URL(req.url ?? '', 'http://localhost')
+    const id = decodeURIComponent(url.pathname.slice(`${BASE}/projects/`.length))
+    if (id === '') return json(res, 400, { error: 'missing project id' })
+    if (req.method === 'PATCH') {
+      const body = await readJsonBody(req, res)
+      if (body === undefined) return
+      await guard(res, async () => {
+        const name = typeof (body as Record<string, unknown>).name === 'string'
+          ? (body as Record<string, unknown>).name as string
+          : ''
+        const project = await ctx.taskboard.renameProject(id, name)
+        json(res, 200, project)
+      })
+      return
+    }
+    if (req.method === 'DELETE') {
+      await guard(res, async () => {
+        const result = await ctx.taskboard.removeProject(id)
+        json(res, 200, result)
+      })
+      return
+    }
+    return json(res, 405, { error: 'use PATCH or DELETE' })
+  })
 
   // v1.5 S1: board-level statistics — ratios, averages, trend, stuck, cost.
   route(`${BASE}/stats`, 'exact', (_req, res) => json(res, 200, ctx.taskboard.stats()))
@@ -160,9 +202,12 @@ export function apply(ctx: Context): void {
       const input = body as Record<string, unknown>
       const title = typeof input.title === 'string' ? input.title.trim() : ''
       if (title === '') throw new TaskboardError('invalid-input', 'title is required')
-      const projectId = typeof input.projectId === 'string'
-        ? input.projectId
-        : ctx.taskboard.projects()[0]?.id
+      // `project_id` (snake, tool-facing) and `projectId` (camel) both work.
+      const projectId = typeof input.project_id === 'string'
+        ? input.project_id
+        : typeof input.projectId === 'string'
+          ? input.projectId
+          : ctx.taskboard.projects()[0]?.id
       if (projectId === undefined) throw new TaskboardError('not-found', 'the board has no project')
       const priority = isPriority(input.priority) ? input.priority : undefined
       const status = isStatus(input.status) ? input.status : undefined
@@ -187,6 +232,7 @@ export function apply(ctx: Context): void {
         ...typeof input.notes === 'string' ? { notes: input.notes } : {},
         ...typeof input.context_budget_tokens === 'number'
           ? { contextBudgetTokens: input.context_budget_tokens } : {},
+        ...nextTaskParse(input.next_task) ? { nextTask: nextTaskParse(input.next_task) as never } : {},
       }, PANEL)
       json(res, 201, task)
     })
@@ -253,8 +299,10 @@ export function apply(ctx: Context): void {
         ...isExecutor(input.executor) ? { executor: input.executor } : {},
         ...typeof input.due_at === 'number' ? { dueAt: input.due_at } : {},
         ...typeof input.note === 'string' ? { note: input.note } : {},
+        ...typeof input.project_id === 'string' ? { projectId: input.project_id } : {},
         ...typeof input.context_budget_tokens === 'number'
           ? { contextBudgetTokens: input.context_budget_tokens } : {},
+        ...nextTaskParse(input.next_task) ? { nextTask: nextTaskParse(input.next_task) as never } : {},
         ...typeof input.expectedRevision === 'number'
           ? { expectedRevision: input.expectedRevision }
           : {},
@@ -330,6 +378,13 @@ async function guard(res: ServerResponse, run: () => Promise<void>): Promise<voi
 }
 
 /** Narrow a wire value to a board column. */
+/** v1.7 P3: parse a `next_task` spec object through the domain schema;
+ * `undefined` means "not a valid spec" (callers omit the field then). */
+function nextTaskParse(value: unknown): NextTaskSpec | undefined {
+  const parsed = nextTaskSpecSchema.safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
 function isStatus(value: unknown): value is TaskStatus {
   return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value)
 }

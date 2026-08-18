@@ -125,7 +125,7 @@ interface ActivityEntry {
   at: number
   actor: 'human' | 'agent'
   actorLabel: string
-  action: 'created' | 'status' | 'edited' | 'removed' | 'blocked' | 'claimed'
+  action: 'created' | 'status' | 'edited' | 'removed' | 'blocked' | 'claimed' | 'dispatched' | 'completed' | 'noted'
   from: string | null
   to: string | null
 }
@@ -180,6 +180,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     priority: string
     executor: 'agent' | 'human' | 'any'
     dueAt: string
+    // v1.7 P1: the owning project (editable in the form).
+    projectId: string
   } | null>(null)
   // Activity drawer (W3).
   const [activityTask, setActivityTask] = useState<BoardTask | null>(null)
@@ -209,6 +211,11 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [statsError, setStatsError] = useState<string | undefined>(undefined)
   // v1.6 C4: search + single-select filters (label/priority), panel-side.
   const [searchQuery, setSearchQuery] = useState('')
+  // v1.7 P1: header project creation (inline input).
+  const [projectCreateOpen, setProjectCreateOpen] = useState(false)
+  // v1.7 P2: the drawer's comment composer.
+  const [commentText, setCommentText] = useState('')
+  const [projectCreateName, setProjectCreateName] = useState('')
   const [filterPriority, setFilterPriority] = useState('all')
   const [filterLabel, setFilterLabel] = useState('all')
 
@@ -306,6 +313,15 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     }
   }, [load])
 
+  /** v1.7 P1: create a project from the header and reload. */
+  const submitProject = useCallback(async (): Promise<void> => {
+    const name = projectCreateName.trim()
+    if (name === '') return
+    await write('/api/taskboard/projects', 'POST', { name })
+    setProjectCreateName('')
+    setProjectCreateOpen(false)
+  }, [projectCreateName, write])
+
   /** v1.4.2: open the create form for a column — same modal as edit, empty
    * fields, target column fixed. Blocked is an agent's report (it needs a
    * reason), so its `+` creates into draft instead. */
@@ -318,8 +334,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       priority: 'normal',
       executor: 'any',
       dueAt: '',
+      projectId: projectFilter !== 'all' ? projectFilter : (board?.projects[0]?.id ?? ''),
     })
-  }, [])
+  }, [projectFilter, board])
 
   /** Open (or refresh) one task's activity drawer. */
   const openActivity = useCallback(async (task: BoardTask): Promise<void> => {
@@ -334,6 +351,20 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       setActivityError(cause instanceof Error ? cause.message : String(cause))
     }
   }, [])
+
+  /** v1.7 P2: append a comment (note) from the drawer; the next comment then
+   * carries the bumped revision. */
+  const sendComment = useCallback(async (): Promise<void> => {
+    if (activityTask === null || commentText.trim() === '') return
+    const text = commentText.trim()
+    await write(`/api/taskboard/task/${encodeURIComponent(activityTask.id)}`, 'PATCH', {
+      note: text,
+      expectedRevision: activityTask.revision,
+    })
+    setCommentText('')
+    const fresh = board?.tasks.find(task => task.id === activityTask.id)
+    if (fresh !== undefined) void openActivity(fresh)
+  }, [activityTask, commentText, board, write, openActivity])
 
   /** Switch the conversation to a task's claiming session (W4). */
   const openSession = useCallback((sessionId: string): void => {
@@ -405,6 +436,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         priority: formDraft.priority,
         executor: formDraft.executor,
         ...formDraft.dueAt === '' ? { due_at: null } : { due_at: new Date(formDraft.dueAt).getTime() },
+        // v1.7 P1: migrate the task to another project from the form.
+        ...formDraft.projectId !== '' && formDraft.projectId !== task.projectId
+          ? { project_id: formDraft.projectId } : {},
         expectedRevision: task.revision,
       })
     } else {
@@ -414,9 +448,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         priority: formDraft.priority,
         executor: formDraft.executor,
         ...formDraft.dueAt === '' ? {} : { due_at: new Date(formDraft.dueAt).getTime() },
-        // v1.4.2: when a project is focused, the new task belongs to it —
-        // otherwise the server defaults to the first project.
-        ...projectFilter !== 'all' ? { projectId: projectFilter } : {},
+        // v1.7 P1: the form's project select decides; falls back to the
+        // server default when empty.
+        ...formDraft.projectId !== '' ? { projectId: formDraft.projectId } : {},
         status: formDraft.status ?? 'draft',
       })
     }
@@ -491,6 +525,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       priority: task.priority,
       executor: task.executor,
       dueAt: localInput,
+      projectId: task.projectId,
     })
   }, [])
 
@@ -517,6 +552,11 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       case 'claimed': return `${actor} ${t('activity.claimed')} ${sessionShort(entry.to ?? '')}`
       case 'removed': return `${actor} ${t('activity.removed')}`
       case 'edited': return `${actor} ${t('activity.edited')}`
+      case 'completed':
+        return `${actor} ${t('activity.completed')} ${entry.to === null ? '' : t(`column.${entry.to}` as TaskboardKey)}`
+      case 'dispatched': return `${actor} ${t('activity.dispatched')} ${sessionShort(entry.to ?? '')}`
+      // v1.7 P2: a noted entry IS the thread — author followed by the text.
+      case 'noted': return `${actor}: ${entry.to ?? ''}`
     }
   }
 
@@ -540,6 +580,29 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
             <option key={project.id} value={project.id}>{project.name}</option>
           ))}
         </select>
+        {/* v1.7 P1: create a project straight from the header. */}
+        {projectCreateOpen ? (
+          <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <input
+              autoFocus
+              value={projectCreateName}
+              placeholder={t('project.new')}
+              onChange={event => { setProjectCreateName(event.target.value) }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void submitProject()
+                if (event.key === 'Escape') { setProjectCreateOpen(false); setProjectCreateName('') }
+              }}
+              style={{ ...control, fontSize: 12, width: 130 }}
+            />
+            <button type="button" onClick={() => { void submitProject() }} disabled={projectCreateName.trim() === ''}
+              style={{ ...control, cursor: projectCreateName.trim() === '' ? 'default' : 'pointer' }}>✓</button>
+            <button type="button" onClick={() => { setProjectCreateOpen(false); setProjectCreateName('') }}
+              style={{ ...control, cursor: 'pointer' }}>×</button>
+          </span>
+        ) : (
+          <button type="button" title={t('project.new')} onClick={() => { setProjectCreateOpen(true) }}
+            style={{ ...control, cursor: 'pointer' }}>+</button>
+        )}
         <span style={{ fontSize: 12, opacity: 0.6, flex: 1 }}>{t('hint')}</span>
         {/* v1.3 D1: the archive is one query away — 归档 ≠ 删除, and the
             toggle is how history comes back into view. */}
@@ -1236,6 +1299,27 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                 </div>
               ))}
             </div>
+            {/* v1.7 P2: the thread composer — a comment lands in the notes,
+                which the next dispatch prompt quotes to the executing agent. */}
+            <div style={{ display: 'flex', gap: 6, padding: 10, borderTop: '1px solid color-mix(in oklab, currentColor 12%, transparent)' }}>
+              <input
+                value={commentText}
+                placeholder={t('comment.placeholder')}
+                onChange={event => { setCommentText(event.target.value) }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void sendComment()
+                }}
+                style={{ ...control, fontSize: 11, flex: 1 }}
+              />
+              <button
+                type="button"
+                onClick={() => { void sendComment() }}
+                disabled={busy || commentText.trim() === ''}
+                style={{ ...control, fontSize: 11, cursor: busy || commentText.trim() === '' ? 'default' : 'pointer' }}
+              >
+                {t('comment.send')}
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -1333,6 +1417,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                     ))}
                   </select>
                 </div>
+                {/* v1.7 P1: owning project — editable in the form. */}
+                <select
+                  value={formDraft.projectId}
+                  onChange={event => { setFormDraft({ ...formDraft, projectId: event.target.value }) }}
+                  style={{ ...control, fontSize: 12, cursor: 'pointer' }}
+                >
+                  {board?.projects.map(project => (
+                    <option key={project.id} value={project.id}>{project.name}</option>
+                  ))}
+                </select>
                 <input
                   type="datetime-local"
                   value={formDraft.dueAt}

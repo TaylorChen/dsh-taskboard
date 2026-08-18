@@ -336,6 +336,21 @@ next task's context.
   label filters narrow the board; they compose with the project and archive
   views.
 
+## Lifecycle, threads, and pipelines (v1.7)
+
+- **Projects.** The header now creates projects (`+`), the task form moves a
+  task to another project, and non-empty projects refuse deletion — the
+  project filter is a real view, not a dead dropdown. Routes:
+  `POST /api/taskboard/projects`, `PATCH|DELETE /api/taskboard/projects/<id>`,
+  and `project_id` on task create/update.
+- **Comment threads.** The activity drawer shows every `noted` entry (retry,
+  heartbeat, comments) as a thread with author and time, and has a composer —
+  a comment lands in the notes, which the next dispatched agent reads.
+- **Task chaining.** A task can carry `next_task` (a child spec); confirming it
+  done auto-creates the child (`open` with criteria, `draft` without) and notes
+  `chained → <key>`. Pipelines without orchestration code; `dependsOn` stays
+  the blocking relationship, `next_task` the triggering one.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
@@ -456,6 +471,9 @@ further action.
 | POST | `/api/taskboard/reorder` | Pin a column's order: `{ "refs": [<id\|key>…] }` — the column's FULL list (v1.4) |
 | GET | `/api/taskboard/stats` | Board statistics — ratios, averages, 7-day trend, stuck, cost (v1.5) |
 | GET | `/api/taskboard/events` | Server-sent events: pushes `changed` on every taskboard write (v1.6) |
+| POST | `/api/taskboard/projects` | Create a project `{ "name" }` (v1.7) |
+| PATCH | `/api/taskboard/projects/<id>` | Rename a project (v1.7) |
+| DELETE | `/api/taskboard/projects/<id>` | Remove an EMPTY project (v1.7) |
 
 Create/update also accept `context_budget_tokens` (input-context cap for the
 dispatched subagent; `null` clears it) since v1.2.

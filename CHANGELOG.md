@@ -4,6 +4,37 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.7.0] — 2025-08-17
+
+Lifecycle, threads, and pipelines (from the v1.7 plan): projects become
+first-class, the activity drawer becomes a comment thread, and completion can
+chain the next task. MCP / signed webhook / checkpoint recovery deferred to
+V1.8 (each needs host-level verification).
+
+### Added
+
+- **Project lifecycle (P1)**: `createProject` / `renameProject` /
+  `removeProject` (non-empty projects refuse deletion); tasks migrate via
+  `projectId` (routes accept both `project_id` and `projectId`); the panel
+  creates projects from the header and migrates from the task form — the v1.4
+  project filter is now a real view.
+- **Comment threads (P2)**: the activity drawer renders `noted` /
+  `completed` / `dispatched` entries (previously unrendered) and gains a
+  composer; a comment lands in the notes, which the next dispatch prompt
+  quotes — the thread reaches the executing agent.
+- **Task chaining (P3)**: `nextTask` (additive) auto-creates a child on
+  `done` (open with criteria, draft without), clears the parent spec, notes
+  `chained → <key>`; idempotent, system write. Tools/routes pass `next_task`.
+- **Fix**: `POST /task` accepted only camelCase `projectId`; `project_id`
+  (tool-facing snake_case) now works too.
+- Real E2E (`tests/e2e/v17-lifecycle.mjs`): project create/filter/migrate/
+  refuse-delete/delete, comment → noted entry, chain create + idempotency —
+  12/12 PASS.
+
+### Migration
+
+None — additive `nextTask` field (default null) and new routes.
+
 ## [1.6.0] — 2025-08-17
 
 Collaboration loop (from the v1.6 plan): the board pushes its changes, failed

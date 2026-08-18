@@ -41,6 +41,8 @@ import {
   type TaskId,
   type TaskPriority,
   type TaskSpec,
+  type NextTaskSpec,
+  nextTaskSpecSchema,
   TASK_STATUSES,
   type TaskStatus,
 } from './domain.ts'
@@ -73,6 +75,8 @@ export interface TaskboardStore {
   getProject(id: ProjectId): Project | undefined
   /** Insert or replace one project; resolves once durable. */
   putProject(project: Project): Promise<void>
+  /** Remove one project; resolves `true` when a record was removed. */
+  deleteProject(id: ProjectId): Promise<boolean>
   /** One task's activity entries, oldest first (medium order). */
   listActivity(taskId: TaskId): readonly Activity[]
   /** Append one activity entry; resolves once durable. */
@@ -179,12 +183,26 @@ export interface CreateTaskInput {
   readonly notes?: string
   /** v1.2 B2: input-context budget for the dispatched subagent; null = unlimited. */
   readonly contextBudgetTokens?: number | null
+  /** v1.7 P3: the task chained on this one's completion. */
+  readonly nextTask?: NextTaskInput | null
+}
+
+/** v1.7 P3: the chained task spec as a caller provides it (optional fields;
+ * the schema fills defaults on store). */
+export type NextTaskInput = {
+  title: string
+  body?: string
+  acceptanceCriteria?: readonly string[]
+  contextRefs?: readonly string[]
+  definitionOfDone?: string
 }
 
 /** Fields accepted when updating a task; omitted fields keep their value. */
 export interface UpdateTaskInput {
   readonly title?: string
   readonly body?: string
+  /** v1.7 P1: migrate the task to another project (must exist). */
+  readonly projectId?: string
   readonly status?: TaskStatus
   readonly priority?: TaskPriority
   readonly labels?: readonly string[]
@@ -214,6 +232,8 @@ export interface UpdateTaskInput {
   readonly dueAt?: number | null
   /** v1.2 B2: replace the input-context budget; null clears it. */
   readonly contextBudgetTokens?: number | null
+  /** v1.7 P3: replace the chained task spec; null clears it. */
+  readonly nextTask?: NextTaskInput | null
   /**
    * v0.9: APPEND one process note (never overwrites). Appending records a
    * `noted` activity entry.
@@ -486,6 +506,69 @@ export class TaskboardService {
   }
 
   /**
+   * v1.7 P1: create a project — the board's first-class container. A
+   * governance write like archiving: human-initiated, no approval gate.
+   * @param name - display name (trimmed, non-empty, unique).
+   * @returns the stored project.
+   */
+  async createProject(name: string): Promise<Project> {
+    const trimmed = name.trim()
+    if (trimmed === '') throw new TaskboardError('invalid-input', 'project name must not be empty')
+    if (this.deps.store.listProjects().some(project => project.name === trimmed)) {
+      throw new TaskboardError('invalid-input', `project '${trimmed}' already exists`)
+    }
+    const at = this.now()
+    const project: Project = {
+      id: this.newId(),
+      name: trimmed,
+      description: '',
+      workspaceId: null,
+      archived: false,
+      createdAt: at,
+      updatedAt: at,
+    }
+    await this.deps.store.putProject(project)
+    return project
+  }
+
+  /**
+   * v1.7 P1: rename a project.
+   * @param id - the project id.
+   * @param name - the new display name.
+   * @returns the stored project.
+   */
+  async renameProject(id: string, name: string): Promise<Project> {
+    const trimmed = name.trim()
+    if (trimmed === '') throw new TaskboardError('invalid-input', 'project name must not be empty')
+    const project = this.deps.store.getProject(id as ProjectId)
+    if (project === undefined) throw new TaskboardError('not-found', `project '${id}' does not exist`)
+    if (this.deps.store.listProjects().some(other => other.id !== id && other.name === trimmed)) {
+      throw new TaskboardError('invalid-input', `project '${trimmed}' already exists`)
+    }
+    const next: Project = { ...project, name: trimmed, updatedAt: this.now() }
+    await this.deps.store.putProject(next)
+    return next
+  }
+
+  /**
+   * v1.7 P1: remove an EMPTY project. A project that still holds tasks is
+   * refused (`invalid-input` with the count) — deletion must never orphan
+   * tasks silently.
+   * @param id - the project id.
+   * @returns how many tasks blocked the removal (always 0 on success).
+   */
+  async removeProject(id: string): Promise<{ removed: boolean, taskCount: number }> {
+    const project = this.deps.store.getProject(id as ProjectId)
+    if (project === undefined) throw new TaskboardError('not-found', `project '${id}' does not exist`)
+    const taskCount = this.deps.store.listTasks().filter(task => task.projectId === id).length
+    if (taskCount > 0) {
+      throw new TaskboardError('invalid-input', `project '${project.name}' has ${taskCount} task(s); move or delete them first`)
+    }
+    await this.deps.store.deleteProject(id as ProjectId)
+    return { removed: true, taskCount: 0 }
+  }
+
+  /**
    * Read the session a task is claimed by.
    * @param ref - short key or full id.
    * @returns the claiming session id, `null` while unclaimed.
@@ -564,6 +647,7 @@ export class TaskboardService {
       contextBudgetTokens: input.contextBudgetTokens ?? null,
       sortOrder: null,
       tokensUsed: null,
+      nextTask: input.nextTask === undefined ? null : nextTaskSpecSchema.parse(input.nextTask),
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -590,6 +674,17 @@ export class TaskboardService {
     }
 
     const status = patch.status ?? current.status
+    // v1.7 P3: entering `done` with a chained spec triggers the chain.
+    const chainSpec = status === 'done' && current.nextTask !== null ? current.nextTask : null
+    // v1.7 P1: migrating a task validates the target project up front.
+    const projectId = patch.projectId === undefined
+      ? current.projectId
+      : (() => {
+        if (this.deps.store.getProject(patch.projectId as ProjectId) === undefined) {
+          throw new TaskboardError('not-found', `project '${patch.projectId}' does not exist`)
+        }
+        return patch.projectId as string
+      })()
     // Leaving `blocked` clears the reason — a task can only be blocked for one
     // reason at a time, and the reason belongs to the state it describes.
     const blockedReason = current.status === 'blocked' && status !== 'blocked'
@@ -626,11 +721,12 @@ export class TaskboardService {
       ? current.notes
       : current.notes === '' ? patch.note : `${current.notes}\n${patch.note}`
 
-    const next: Task = {
+    let next: Task = {
       ...current,
       title: patch.title ?? current.title,
       body: patch.body ?? current.body,
       status,
+      projectId,
       priority: patch.priority ?? current.priority,
       labels: patch.labels === undefined ? current.labels : [...patch.labels],
       workspaceId,
@@ -653,6 +749,13 @@ export class TaskboardService {
       contextBudgetTokens: patch.contextBudgetTokens === undefined
         ? current.contextBudgetTokens
         : patch.contextBudgetTokens,
+      // v1.7 P3: a `done` transition chains the next task and clears the spec
+      // (idempotent — a second confirm cannot re-chain).
+      nextTask: chainSpec === null
+        ? patch.nextTask === undefined
+          ? current.nextTask
+          : patch.nextTask === null ? null : nextTaskSpecSchema.parse(patch.nextTask)
+        : null,
       notes,
       revision: current.revision + 1,
       updatedAt: this.now(),
@@ -670,6 +773,17 @@ export class TaskboardService {
         'revision-conflict',
         `task '${ref}' changed while the approval was open (now revision ${atCommit.revision}); reread and retry`,
       )
+    }
+    // v1.7 P3: chain the next task (a system write, like autoClaim) BEFORE
+    // the parent lands, so the `chained → <key>` note rides the same record.
+    if (chainSpec !== null) {
+      const child = await this.chainFrom(next, chainSpec, actor)
+      const at = this.now()
+      next = {
+        ...next,
+        notes: next.notes === '' ? `chained → ${child.key}` : `${next.notes}\nchained → ${child.key}`,
+        updatedAt: at,
+      }
     }
     await this.deps.store.putTask(next)
     const change = activityFor(current, next)
@@ -857,6 +971,56 @@ export class TaskboardService {
    */
   evidenceOf(ref: TaskRef): TaskEvidence | null {
     return this.require(ref).evidence ?? null
+  }
+
+  /**
+   * v1.7 P3: auto-create the task chained from a completing parent. A SYSTEM
+   * write like `autoClaim` — no approval gate (the deployment's configured
+   * automation). Lands in `open` when the chain spec has criteria, else
+   * `draft`, in the parent's project and workspace.
+   * @param parent - the completing task (its chain spec is already cleared).
+   * @param spec - the chained task's spec (from the parent's `nextTask`).
+   * @param actor - who confirmed the parent (the chain's origin label).
+   * @returns the created child.
+   */
+  private async chainFrom(parent: Task, spec: NextTaskSpec, actor: Actor): Promise<Task> {
+    const at = this.now()
+    const child: Task = {
+      id: this.newId(),
+      key: await this.allocateKey(),
+      projectId: parent.projectId,
+      title: spec.title,
+      body: spec.body,
+      status: spec.acceptanceCriteria.length > 0 ? 'open' : 'draft',
+      priority: 'normal',
+      labels: [],
+      workspaceId: parent.workspaceId,
+      claimedBySessionId: null,
+      origin: actor.kind,
+      blockedReason: null,
+      spec: {
+        acceptanceCriteria: spec.acceptanceCriteria,
+        contextRefs: spec.contextRefs,
+        definitionOfDone: spec.definitionOfDone,
+      },
+      evidence: null,
+      dependsOn: [],
+      budgetTokens: null,
+      executor: 'any',
+      dueAt: null,
+      notes: '',
+      archivedAt: null,
+      contextBudgetTokens: null,
+      sortOrder: null,
+      tokensUsed: null,
+      nextTask: null,
+      revision: 0,
+      createdAt: at,
+      updatedAt: at,
+    }
+    await this.deps.store.putTask(child)
+    await this.recordActivity(child.id as TaskId, 'created', null, child.status, actor, at)
+    return child
   }
 
   /**

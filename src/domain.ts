@@ -89,6 +89,21 @@ export const taskSpecSchema = z.object({
 export type TaskSpec = z.infer<typeof taskSpecSchema>
 
 /**
+ * v1.7 P3: the task chained from this one — when the parent reaches `done`,
+ * the board auto-creates a child with this spec. Cleared on the parent after
+ * chaining (idempotent). Additive with `.default(null)`.
+ */
+export const nextTaskSpecSchema = z.object({
+  title: z.string().min(1),
+  body: z.string().default(''),
+  acceptanceCriteria: z.array(z.string()).default([]),
+  contextRefs: z.array(z.string()).default([]),
+  definitionOfDone: z.string().default(''),
+})
+/** The task chained from a completing task (v1.7 P3). */
+export type NextTaskSpec = z.infer<typeof nextTaskSpecSchema>
+
+/**
  * A task's execution evidence (ROADMAP L3, v0.6): the structured report a
  * dispatched subagent produces, making "completed" mean "completed with
  * evidence". `criteria` is the per-criterion self-assessment (met + note),
@@ -187,6 +202,8 @@ export const taskSchema = z.object({
    * `updatedAt`). Written in bulk by `reorder`; additive with `.default(null)`.
    */
   sortOrder: z.number().int().nonnegative().nullable().default(null),
+  /** v1.7 P3: the task chained on this one's completion; null = no chain. */
+  nextTask: nextTaskSpecSchema.nullable().default(null),
   /**
    * Actual input-context tokens consumed by the dispatched subagent (v1.5 S2):
    * recorded at settle as the delta over the pre-dispatch baseline. `null` =
