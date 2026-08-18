@@ -359,7 +359,18 @@ next task's context.
   `task_claim` / `task_block` / `task_comment` / `task_stats` on the board.
   Boots a profile with storage + taskboard rows (`DSH_MCP_PROFILE`, default
   `mcp`); writes follow `writePolicy` (use `auto` for headless MCP, `ask`
-  refuses with a message).
+  refuses with a message). Claude Desktop:
+
+  ```json
+  {
+    "mcpServers": {
+      "dsh-taskboard": {
+        "command": "dsh-taskboard-mcp",
+        "env": { "DSH_HOME": "/path/to/dsh-home", "DSH_PACKAGE": "/path/to/@deepseek-ai/dsh", "DSH_MCP_PROFILE": "mcp" }
+      }
+    }
+  }
+  ```
 - **Signed webhooks.** The `webhook { url, secret }` config POSTs a
   `taskboard.changed` payload on every write with
   `X-Timestamp` + `X-Signature: sha256=<HMAC(secret, ts.body)>` — receivers
@@ -505,14 +516,15 @@ further action.
 | PATCH | `/api/taskboard/task/<id\|key>` | Archive/restore: send `{ "archived": true\|false }` (v1.2) |
 | POST | `/api/taskboard/archive-done` | Sweep the whole done column; returns `{ "archived": n }` (v1.3) |
 | POST | `/api/taskboard/reorder` | Pin a column's order: `{ "refs": [<id\|key>…] }` — the column's FULL list (v1.4) |
-| GET | `/api/taskboard/stats` | Board statistics — ratios, averages, 7-day trend, stuck, cost (v1.5) |
+| GET | `/api/taskboard/stats` | Board statistics — ratios, averages, trend, failure modes, by-agent, cumulative flow, stuck, cost (v1.5/v1.9) |
 | GET | `/api/taskboard/events` | Server-sent events: pushes `changed` on every taskboard write (v1.6) |
 | POST | `/api/taskboard/projects` | Create a project `{ "name" }` (v1.7) |
 | PATCH | `/api/taskboard/projects/<id>` | Rename a project (v1.7) |
 | DELETE | `/api/taskboard/projects/<id>` | Remove an EMPTY project (v1.7) |
 
 Create/update also accept `context_budget_tokens` (input-context cap for the
-dispatched subagent; `null` clears it) since v1.2.
+dispatched subagent; `null` clears it) since v1.2, `project_id` (migrate the
+task to another project) and `next_task` (the chained task spec) since v1.7.
 
 Registered on the host's existing web server; no new port. **Writes require
 `content-type: application/json`** — see [SECURITY.md](SECURITY.md) for why.
