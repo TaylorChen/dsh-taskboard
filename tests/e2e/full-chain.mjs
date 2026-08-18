@@ -68,7 +68,7 @@ if (projectId === undefined) {
   process.exit(1)
 }
 const seeded = await taskboard.create(
-  { projectId, title: TASK_TITLE, status: 'open' },
+  { projectId, title: TASK_TITLE, status: 'open', acceptanceCriteria: ['reply with exactly FULL-V04 and nothing else'] },
   { kind: 'human', via: 'panel' },
 )
 log(`seeded ${seeded.key} (${seeded.status})`)
