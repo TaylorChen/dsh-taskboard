@@ -47,6 +47,7 @@
     "README.md",
     "ARCHITECTURE.md",
     "SECURITY.md",
+    "docs/screenshots/**",
     "LICENSE"
   ],
   "dsh": {

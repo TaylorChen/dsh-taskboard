@@ -23,9 +23,15 @@ empty.
 - Edit behaviour unchanged: PATCH with `expectedRevision` (a racing change
   stays a 409).
 
+### Changed
+
+- **Screenshots**: the README gains a 效果截图 section with real renders of the
+  board panel, the edit modal, and the create modal (docs/screenshots/, shipped
+  in the npm package so the registry page shows them too).
+
 ### Migration
 
-None — panel-only change.
+None — panel-only change + docs.
 
 ## [1.4.1] — 2025-08-17
 

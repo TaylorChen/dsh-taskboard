@@ -6,6 +6,19 @@ Built as a **complete capability seam** — `ctx.taskboard` service + storage-do
 provider + model tools + `/task` commands + a JSON API + a board panel — not as a
 bag of tools.
 
+## Screenshots (效果截图)
+
+The board panel (任务板) — glance-stats line, project dropdown, ball-to-human
+highlighting, per-column counts, execution evidence, blocked reasons, and the
+one-click actions (归档 / 解除阻碍 / 归档全部):
+
+![Board panel](docs/screenshots/board.png)
+
+Create and edit share **one centered modal** — the same fields, create starts
+empty, edit loads the card (title, description, priority, executor, deadline):
+
+![Edit modal](docs/screenshots/edit-modal.png) · ![Create modal](docs/screenshots/create-modal.png)
+
 ## Why this exists next to `todo_write`
 
 dsh already ships session-scoped work tracking. This plugin does not replace it:
