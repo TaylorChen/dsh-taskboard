@@ -84,6 +84,13 @@ export const taskSpecSchema = z.object({
   acceptanceCriteria: z.array(z.string().min(1)).max(32).default([]),
   contextRefs: z.array(z.string().min(1)).max(32).default([]),
   definitionOfDone: z.string().max(2000).default(''),
+  /**
+   * v1.10 C1: the executable verification — a concrete command the executor
+   * must run to prove the criteria (e.g. `node tests/e2e/v12.mjs`), turning
+   * "the agent says it works" into "the board's own check passes". Additive
+   * `.default('')` — stored records without it read back as an empty string.
+   */
+  verification: z.string().max(2000).default(''),
 })
 /** One task's executable specification. */
 export type TaskSpec = z.infer<typeof taskSpecSchema>
@@ -99,6 +106,7 @@ export const nextTaskSpecSchema = z.object({
   acceptanceCriteria: z.array(z.string()).default([]),
   contextRefs: z.array(z.string()).default([]),
   definitionOfDone: z.string().default(''),
+  verification: z.string().default(''),
 })
 /** The task chained from a completing task (v1.7 P3). */
 export type NextTaskSpec = z.infer<typeof nextTaskSpecSchema>

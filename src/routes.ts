@@ -237,6 +237,8 @@ export function apply(ctx: Context): void {
           ? { contextRefs: input.context_refs as string[] } : {},
         ...typeof input.definition_of_done === 'string'
           ? { definitionOfDone: input.definition_of_done } : {},
+        ...typeof input.verification === 'string'
+          ? { verification: input.verification } : {},
         ...Array.isArray(input.depends_on)
           ? { dependsOn: input.depends_on as string[] } : {},
         ...typeof input.budget_tokens === 'number'
@@ -298,6 +300,8 @@ export function apply(ctx: Context): void {
           ? { contextRefs: input.context_refs as string[] } : {},
         ...typeof input.definition_of_done === 'string'
           ? { definitionOfDone: input.definition_of_done } : {},
+        ...typeof input.verification === 'string'
+          ? { verification: input.verification } : {},
       }
       const task = await ctx.taskboard.update(tail, {
         ...status === undefined ? {} : { status },

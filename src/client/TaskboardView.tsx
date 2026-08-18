@@ -81,7 +81,7 @@ interface BoardTask {
   workspaceId: string | null
   blockedReason: string | null
   claimedBySessionId: string | null
-  spec: { acceptanceCriteria: string[], contextRefs: string[], definitionOfDone: string } | null
+  spec: { acceptanceCriteria: string[], contextRefs: string[], definitionOfDone: string, verification: string } | null
   evidence: {
     criteria: Array<{ criterion: string, met: boolean, note: string }>
     artifacts: string[]
@@ -192,6 +192,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     dueAt: string
     // v1.7 P1: the owning project (editable in the form).
     projectId: string
+    // v1.10 C1: the executable verification command (optional, create-only).
+    verification: string
   } | null>(null)
   // Activity drawer (W3).
   const [activityTask, setActivityTask] = useState<BoardTask | null>(null)
@@ -367,6 +369,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       executor: 'any',
       dueAt: '',
       projectId: projectFilter !== 'all' ? projectFilter : (board?.projects[0]?.id ?? ''),
+      verification: '',
     })
   }, [projectFilter, board])
 
@@ -532,6 +535,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         // v1.7 P1: migrate the task to another project from the form.
         ...formDraft.projectId !== '' && formDraft.projectId !== task.projectId
           ? { project_id: formDraft.projectId } : {},
+        // v1.10 C1: the executable verification, edited in place.
+        ...formDraft.verification !== (task.spec?.verification ?? '')
+          ? { verification: formDraft.verification } : {},
         expectedRevision: task.revision,
       })
     } else {
@@ -544,6 +550,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         // v1.7 P1: the form's project select decides; falls back to the
         // server default when empty.
         ...formDraft.projectId !== '' ? { projectId: formDraft.projectId } : {},
+        // v1.10 C1: the executable verification command, when provided.
+        ...formDraft.verification === '' ? {} : { verification: formDraft.verification },
         status: formDraft.status ?? 'draft',
       })
     }
@@ -619,6 +627,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       executor: task.executor,
       dueAt: localInput,
       projectId: task.projectId,
+      verification: task.spec?.verification ?? '',
     })
   }, [])
 
@@ -1202,6 +1211,27 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           ))}
                         </div>
                       )}
+                      {/* v1.10 C1: the executable verification, surfaced on the
+                          card so anyone can re-run the proof themselves. */}
+                      {task.spec !== null && task.spec.verification !== '' && (
+                        <div
+                          data-verification
+                          title={t('verification.title')}
+                          style={{
+                            ...surface,
+                            fontSize: 10,
+                            padding: '3px 6px',
+                            marginBottom: 6,
+                            fontFamily: 'ui-monospace, monospace',
+                            opacity: 0.75,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          ▶ {task.spec.verification}
+                        </div>
+                      )}
                       {/* v0.6: a settled task carries the subagent's evidence.
                           v1.10 A5: it renders as a certificate of completion —
                           a stamped, auditable proof of delivery, with each
@@ -1770,6 +1800,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                   value={formDraft.dueAt}
                   onChange={event => { setFormDraft({ ...formDraft, dueAt: event.target.value }) }}
                   style={{ ...control, fontSize: 12 }}
+                />
+                {/* v1.10 C1: the executable verification — one command that
+                    PROVES the criteria. Optional; when set, the dispatched
+                    agent must run it and report its real output. */}
+                <input
+                  value={formDraft.verification}
+                  placeholder={t('verification.placeholder')}
+                  title={t('verification.title')}
+                  onChange={event => { setFormDraft({ ...formDraft, verification: event.target.value }) }}
+                  style={{ ...control, fontSize: 12, fontFamily: 'ui-monospace, monospace' }}
                 />
                 <div style={{ display: 'flex', gap: 10 }}>
                   <button

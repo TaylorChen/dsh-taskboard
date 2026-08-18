@@ -170,6 +170,10 @@ export function apply(ctx: Context, config: Config): void {
         description: 'Files, commits, or issues the executor should read (e.g. src/foo.ts, #42)',
       },
       definition_of_done: { type: 'string', description: 'Optional closing conditions text' },
+      verification: {
+        type: 'string',
+        description: 'v1.10 C1: an executable verification command the executor must run to prove the criteria (e.g. node tests/e2e/v12.mjs)',
+      },
       depends_on: {
         type: 'array',
         items: { type: 'string' },
@@ -235,6 +239,8 @@ export function apply(ctx: Context, config: Config): void {
         ...args.context_refs === undefined ? {} : { contextRefs: args.context_refs },
         ...args.definition_of_done === undefined
           ? {} : { definitionOfDone: args.definition_of_done },
+        ...args.verification === undefined
+          ? {} : { verification: args.verification },
         ...args.depends_on === undefined ? {} : { dependsOn: args.depends_on },
         ...args.budget_tokens === undefined ? {} : { budgetTokens: args.budget_tokens },
         ...args.executor === undefined ? {} : { executor: args.executor },
@@ -276,6 +282,10 @@ export function apply(ctx: Context, config: Config): void {
         description: 'Files, commits, or issues the executor should read',
       },
       definition_of_done: { type: 'string', description: 'Optional closing conditions text' },
+      verification: {
+        type: 'string',
+        description: 'v1.10 C1: replace the executable verification command that proves the criteria',
+      },
       depends_on: {
         type: 'array',
         items: { type: 'string' },
@@ -321,6 +331,8 @@ export function apply(ctx: Context, config: Config): void {
           ? { contextRefs: args.context_refs } : {},
         ...args.definition_of_done !== undefined
           ? { definitionOfDone: args.definition_of_done } : {},
+        ...args.verification !== undefined
+          ? { verification: args.verification } : {},
       }
       const task = await ctx.taskboard.update(args.id, {
         ...args.status === undefined ? {} : { status: args.status },

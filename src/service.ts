@@ -171,6 +171,8 @@ export interface CreateTaskInput {
   readonly contextRefs?: readonly string[]
   /** v0.5 spec: optional closing conditions text. */
   readonly definitionOfDone?: string
+  /** v1.10 C1: an executable verification command the executor must run. */
+  readonly verification?: string
   /** v0.7: prerequisite task references (keys or ids); each must not form a cycle. */
   readonly dependsOn?: readonly string[]
   /** v0.7: output-token budget for the dispatched subagent; null = unlimited. */
@@ -195,6 +197,7 @@ export type NextTaskInput = {
   acceptanceCriteria?: readonly string[]
   contextRefs?: readonly string[]
   definitionOfDone?: string
+  verification?: string
 }
 
 /** Fields accepted when updating a task; omitted fields keep their value. */
@@ -221,6 +224,7 @@ export interface UpdateTaskInput {
     readonly acceptanceCriteria?: readonly string[]
     readonly contextRefs?: readonly string[]
     readonly definitionOfDone?: string
+    readonly verification?: string
   }
   /** v0.7: replace the prerequisite task references (cycle-checked). */
   readonly dependsOn?: readonly string[]
@@ -1011,6 +1015,7 @@ export class TaskboardService {
         acceptanceCriteria: spec.acceptanceCriteria,
         contextRefs: spec.contextRefs,
         definitionOfDone: spec.definitionOfDone,
+        verification: spec.verification ?? '',
       },
       evidence: null,
       dependsOn: [],
@@ -1842,11 +1847,13 @@ function buildSpec(input: CreateTaskInput): TaskSpec | null {
     input.acceptanceCriteria === undefined
     && input.contextRefs === undefined
     && input.definitionOfDone === undefined
+    && input.verification === undefined
   ) return null
   return {
     acceptanceCriteria: [...(input.acceptanceCriteria ?? [])],
     contextRefs: [...(input.contextRefs ?? [])],
     definitionOfDone: input.definitionOfDone ?? '',
+    verification: input.verification ?? '',
   }
 }
 
@@ -1863,6 +1870,9 @@ function mergeSpec(current: TaskSpec | null, patch: UpdateTaskInput['spec']): Ta
     definitionOfDone: patch.definitionOfDone === undefined
       ? current?.definitionOfDone ?? ''
       : patch.definitionOfDone,
+    verification: patch.verification === undefined
+      ? current?.verification ?? ''
+      : patch.verification,
   }
 }
 

@@ -797,6 +797,12 @@ function renderDispatchPrompt(task: Task): string {
     spec !== null && spec.definitionOfDone !== ''
       ? `\nDefinition of done: ${spec.definitionOfDone}`
       : undefined,
+    // v1.10 C1: the executable verification — the one command that PROVES the
+    // criteria. Run it and report its real output; met:true must be backed by
+    // it, not by an assertion.
+    spec !== null && spec.verification !== ''
+      ? `\nExecutable verification (RUN this command and report its actual output):\n${spec.verification}`
+      : undefined,
     task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
     // v1.5 S3: the human's notes (incl. a bounce reason, which lands in notes
     // as `bounce: …`) are part of the execution context — without this the
@@ -821,6 +827,9 @@ function renderFollowup(task: Task): string {
     spec === null || spec.acceptanceCriteria.length === 0
       ? undefined
       : `\nAcceptance criteria (verify each):\n${spec.acceptanceCriteria.map(c => `- ${c}`).join('\n')}`,
+    spec !== null && spec.verification !== ''
+      ? `\nExecutable verification (RUN this command and report its actual output):\n${spec.verification}`
+      : undefined,
     task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
   ].filter(line => line !== undefined).join('\n')
 }

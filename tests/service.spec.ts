@@ -1475,3 +1475,52 @@ describe('export and import', () => {
       .rejects.toMatchObject({ code: 'unsupported-document' })
   })
 })
+
+describe('executable verification (v1.10 C1)', () => {
+  it('create stores the verification command on the spec', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Verifiable task',
+      acceptanceCriteria: ['node tests/e2e/v12.mjs exits 0'],
+      verification: 'node tests/e2e/v12.mjs',
+    }, actor)
+    expect(task.spec?.verification).toBe('node tests/e2e/v12.mjs')
+    expect(task.spec?.acceptanceCriteria).toEqual(['node tests/e2e/v12.mjs exits 0'])
+  })
+
+  it('update merges the verification onto the existing spec', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Verifiable task',
+      acceptanceCriteria: ['a'],
+    }, actor)
+    const updated = await service.update(task.key as string, {
+      spec: { verification: 'node check.mjs' },
+    }, actor)
+    expect(updated.spec?.verification).toBe('node check.mjs')
+    expect(updated.spec?.acceptanceCriteria).toEqual(['a'])
+  })
+
+  it('tasks without verification read back with an empty string', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Plain task',
+      acceptanceCriteria: ['a'],
+    }, actor)
+    expect(task.spec?.verification).toBe('')
+  })
+
+  it('verification is not part of the open gate', async () => {
+    const { service, actor } = build('auto')
+    const task = await service.create({
+      projectId: PROJECT_ID,
+      title: 'Verification-only spec',
+      acceptanceCriteria: ['a'],
+      verification: 'node check.mjs',
+    }, actor)
+    expect(task.status).toBe('open')
+  })
+})
