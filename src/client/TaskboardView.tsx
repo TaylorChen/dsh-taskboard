@@ -23,6 +23,7 @@ import type { CSSProperties } from 'react'
 import type { TaskboardKey } from './locales.ts'
 import { buildTimeline, enteredStatus, STATUS_TIMELINE_COLOR } from './timeline.ts'
 import { injectBallKeyframes, statusBall } from './ball.ts'
+import { evidenceScore, evidenceStamp, evidenceVerdict } from './evidence.ts'
 
 // v1.10 A4: the status ball's keyframes are page-global, injected once at
 // module load (idempotent, client-only).
@@ -227,6 +228,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [projectCreateName, setProjectCreateName] = useState('')
   const [filterPriority, setFilterPriority] = useState('all')
   const [filterLabel, setFilterLabel] = useState('all')
+  // v1.10 A5: which artifact was just copied (for the "Copied!" flash).
+  const [copiedArtifact, setCopiedArtifact] = useState<string | null>(null)
 
   /** Fetch the board without touching `busy`; shared by load (busy) and the
    * v1.6 C1 SSE auto-refresh (silent). */
@@ -1048,32 +1051,87 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           ))}
                         </div>
                       )}
-                      {/* v0.6: a settled task carries the subagent's evidence;
-                          the human confirms or bounces it. */}
-                      {task.status === 'awaiting_human' && task.evidence !== null && (
-                        <div style={{ ...surface, padding: 8, marginBottom: 6, fontSize: 11, lineHeight: 1.4 }}>
-                          <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('evidence.title')}</div>
-                          {task.evidence.criteria.map((entry, index) => (
-                            <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
-                              <span style={{ color: entry.met ? undefined : BLOCKED_TINT }}>
-                                {entry.met ? '✓' : '✗'}
-                              </span>
-                              <span style={{ flex: 1 }}>
-                                {entry.criterion}
-                                {entry.note !== '' && <span style={{ opacity: 0.6 }}> — {entry.note}</span>}
+                      {/* v0.6: a settled task carries the subagent's evidence.
+                          v1.10 A5: it renders as a certificate of completion —
+                          a stamped, auditable proof of delivery, with each
+                          artifact one click away from the clipboard. */}
+                      {task.status === 'awaiting_human' && task.evidence !== null && (() => {
+                        const score = evidenceScore(task.evidence)
+                        const verdict = evidenceVerdict(score)
+                        const verdictTint = verdict === 'verified'
+                          ? 'color-mix(in oklab, #2f9e44 65%, currentColor)'
+                          : verdict === 'partial'
+                            ? 'color-mix(in oklab, #f76b15 60%, currentColor)'
+                            : 'color-mix(in oklab, currentColor 45%, transparent)'
+                        return (
+                          <div
+                            data-certificate
+                            style={{
+                              ...surface,
+                              padding: 8,
+                              marginBottom: 6,
+                              fontSize: 11,
+                              lineHeight: 1.4,
+                              border: `1px solid color-mix(in oklab, ${verdict === 'verified' ? '#2f9e44' : verdict === 'partial' ? '#f76b15' : 'currentColor'} 35%, transparent)`,
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                              <span style={{ fontWeight: 700, flex: 1 }}>{t('evidence.certificate')}</span>
+                              <span style={{ fontSize: 10, opacity: 0.6 }}>{evidenceStamp(task.key, task.updatedAt)}</span>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: verdictTint, whiteSpace: 'nowrap' }}>
+                                {score.met}/{score.total} · {t(`evidence.${verdict}` as TaskboardKey)}
                               </span>
                             </div>
-                          ))}
-                          {task.evidence.artifacts.length > 0 && (
-                            <div style={{ opacity: 0.7, marginTop: 4 }}>
-                              {t('evidence.artifacts')}: {task.evidence.artifacts.join(', ')}
-                            </div>
-                          )}
-                          {task.evidence.summary !== '' && (
-                            <div style={{ opacity: 0.7, marginTop: 4 }}>{task.evidence.summary}</div>
-                          )}
-                        </div>
-                      )}
+                            {task.evidence.criteria.map((entry, index) => (
+                              <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
+                                <span style={{ color: entry.met ? undefined : BLOCKED_TINT }}>
+                                  {entry.met ? '✓' : '✗'}
+                                </span>
+                                <span style={{ flex: 1 }}>
+                                  {entry.criterion}
+                                  {entry.note !== '' && <span style={{ opacity: 0.6 }}> — {entry.note}</span>}
+                                </span>
+                              </div>
+                            ))}
+                            {task.evidence.artifacts.length > 0 && (
+                              <div style={{ opacity: 0.7, marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                                <span>{t('evidence.artifacts')}:</span>
+                                {task.evidence.artifacts.map(artifact => (
+                                  <button
+                                    key={artifact}
+                                    type="button"
+                                    data-artifact={artifact}
+                                    onClick={() => {
+                                      void navigator.clipboard.writeText(artifact).then(() => {
+                                        setCopiedArtifact(artifact)
+                                        window.setTimeout(() => {
+                                          setCopiedArtifact(current => current === artifact ? null : current)
+                                        }, 1400)
+                                      })
+                                    }}
+                                    title={artifact}
+                                    style={{
+                                      ...control,
+                                      fontSize: 10,
+                                      padding: '1px 6px',
+                                      cursor: 'pointer',
+                                      maxWidth: 180,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {copiedArtifact === artifact ? t('evidence.copied') : artifact}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {task.evidence.summary !== '' && (
+                              <div style={{ opacity: 0.7, marginTop: 4 }}>{task.evidence.summary}</div>
+                            )}
+                          </div>
+                        )
+                      })()}
                       {task.status === 'awaiting_human' && (
                         <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                           <button
