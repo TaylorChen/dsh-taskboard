@@ -22,6 +22,11 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { TaskboardKey } from './locales.ts'
 import { buildTimeline, enteredStatus, STATUS_TIMELINE_COLOR } from './timeline.ts'
+import { injectBallKeyframes, statusBall } from './ball.ts'
+
+// v1.10 A4: the status ball's keyframes are page-global, injected once at
+// module load (idempotent, client-only).
+injectBallKeyframes()
 
 /** Board columns, in display order. Mirrors `TASK_STATUSES` on the host. */
 const COLUMNS = ['draft', 'open', 'in_progress', 'awaiting_human', 'blocked', 'done', 'cancelled'] as const
@@ -897,7 +902,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                   </span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {tasks.map(task => (
+                  {tasks.map(task => {
+                    const ball = statusBall(task.status)
+                    return (
                     <article
                       key={task.id}
                       // v1.4 E3: drag to reorder — only in the unfiltered
@@ -929,7 +936,25 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         ...blockedColumn ? { borderColor: 'color-mix(in oklab, #e5484d 55%, transparent)' } : {},
                       }}
                     >
-                      <div style={{ fontSize: 13, lineHeight: 1.35, marginBottom: 6 }}>{task.title}</div>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, marginBottom: 6 }}>
+                        {/* v1.10 A4: the status ball — a still dot for parked
+                            tasks, a pulsing blue one while the agent works, a
+                            breathing red one when the ball is with a human. */}
+                        <span
+                          data-status-ball={task.status}
+                          title={t(`column.${task.status}` as TaskboardKey)}
+                          style={{
+                            flexShrink: 0,
+                            width: 9,
+                            height: 9,
+                            marginTop: 4,
+                            borderRadius: '50%',
+                            background: ball.color,
+                            ...ball.animation === null ? {} : { animation: ball.animation },
+                          }}
+                        />
+                        <div style={{ fontSize: 13, lineHeight: 1.35 }}>{task.title}</div>
+                      </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
                         <span>{task.key ?? task.id.slice(0, 8)}</span>
                         <span>· {projectName(task.projectId)}</span>
@@ -1266,7 +1291,8 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                         )}
                       </div>
                     </article>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             )
