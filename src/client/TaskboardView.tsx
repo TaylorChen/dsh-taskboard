@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { TaskboardKey } from './locales.ts'
+import { buildTimeline, enteredStatus, STATUS_TIMELINE_COLOR } from './timeline.ts'
 
 /** Board columns, in display order. Mirrors `TASK_STATUSES` on the host. */
 const COLUMNS = ['draft', 'open', 'in_progress', 'awaiting_human', 'blocked', 'done', 'cancelled'] as const
@@ -1323,17 +1324,50 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
               {activity === undefined && activityError === undefined && (
                 <div style={{ fontSize: 12, opacity: 0.6 }}>{t('loading')}</div>
               )}
-              {activity !== undefined && activity.length === 0 && (
-                <div style={{ fontSize: 12, opacity: 0.6 }}>{t('empty')}</div>
-              )}
-              {activity !== undefined && activity.map(entry => (
-                <div key={entry.id} style={{ ...surface, padding: 8, fontSize: 12, lineHeight: 1.4 }}>
-                  <div>{describeEntry(entry)}</div>
-                  <div style={{ fontSize: 10, opacity: 0.55, marginTop: 2 }}>
-                    {new Date(entry.at).toLocaleString()}
+
+              {activity !== undefined && (() => {
+                const { events, segments } = buildTimeline(activity)
+                if (events.length === 0) return <div style={{ fontSize: 12, opacity: 0.6 }}>{t('empty')}</div>
+                const first = events[0]?.at ?? 0
+                const last = events[events.length - 1]?.at ?? first
+                const span = Math.max(1, last - first)
+                return (
+                  /* v1.10 A1: the task movie — chronological events on a rail
+                      with colored status segments showing the story at a glance. */
+                  <div style={{ position: 'relative', paddingLeft: 18 }}>
+                    <div style={{ position: 'absolute', left: 5, top: 4, bottom: 4, width: 2, background: 'color-mix(in oklab, currentColor 15%, transparent)' }} />
+                    {segments.map((segment, index) => (
+                      <div
+                        key={index}
+                        title={segment.status}
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          top: `${((segment.start - first) / span) * 100}%`,
+                          height: `${Math.max(2, ((segment.end - segment.start) / span) * 100)}%`,
+                          width: 10,
+                          borderRadius: 3,
+                          background: STATUS_TIMELINE_COLOR[segment.status] ?? 'transparent',
+                          opacity: 0.7,
+                        }}
+                      />
+                    ))}
+                    {events.map(entry => (
+                      <div key={entry.id} style={{ position: 'relative', marginBottom: 8 }}>
+                        <div style={{
+                          position: 'absolute', left: -16, top: 5, width: 8, height: 8, borderRadius: 4,
+                          background: STATUS_TIMELINE_COLOR[enteredStatus(entry) ?? ''] ?? 'currentColor',
+                          border: '1px solid color-mix(in oklab, currentColor 30%, transparent)',
+                        }} />
+                        <div style={{ fontSize: 12, lineHeight: 1.4 }}>{describeEntry(entry)}</div>
+                        <div style={{ fontSize: 10, opacity: 0.55, marginTop: 1 }}>
+                          {new Date(entry.at).toLocaleString()}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ))}
+                )
+              })()}
             </div>
             {/* v1.7 P2: the thread composer — a comment lands in the notes,
                 which the next dispatch prompt quotes to the executing agent. */}
