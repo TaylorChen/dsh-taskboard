@@ -4,6 +4,35 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.8.0] — 2025-08-17
+
+Ecosystem access (from the v1.8 plan): external agents reach the board over
+MCP, events leave it signed, and stale claims recover instead of stranding.
+
+### Added
+
+- **MCP server (M1)**: `bin/mcp-server.mjs` + `dsh-taskboard-mcp` bin — a
+  standalone stdio MCP server (JSON-RPC 2.0) exposing task_list/create/update/
+  claim/block/comment/stats to any MCP client; writes follow `writePolicy`
+  (auto headless-friendly, ask refuses with a message); actor recorded as
+  `mcp`.
+- **Signed webhook (M2)**: `webhook { url, secret }` config POSTs a
+  `taskboard.changed` payload on every write with
+  `X-Timestamp` + `X-Signature: sha256=<HMAC(secret, ts.body)>`; fire-and-forget
+  with a warn on failure.
+- **Stale-claim recovery (M3)**: `staleClaimMinutes` (default 60) releases an
+  `in_progress` task whose claiming session is gone, or idle with nothing
+  dispatched, back to `open` with a `recovered: session lost` note — covering
+  process restarts; `staleClaimCandidates` is an exported pure function.
+- Real E2E: `tests/e2e/v18-mcp.mjs` (full stdio JSON-RPC session — 7/7 PASS)
+  and `tests/e2e/v18-webhook.mjs` (local sink verifies HMAC signature —
+  PASS).
+
+### Migration
+
+None — additive config (`webhook`, `staleClaimMinutes`, both off by default)
+and a new bin.
+
 ## [1.7.0] — 2025-08-17
 
 Lifecycle, threads, and pipelines (from the v1.7 plan): projects become

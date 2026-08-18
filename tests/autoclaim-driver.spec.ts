@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { apply, estimateInputTokens } from '../src/autoclaim.ts'
+import { apply, estimateInputTokens, staleClaimCandidates } from '../src/autoclaim.ts'
 import { TaskboardService, type Actor, type TaskboardStore } from '../src/service.ts'
 import type { Activity, Task, Project, ProjectId, TaskId } from '../src/domain.ts'
 
@@ -155,6 +155,7 @@ function rig(
     dispatchTimeoutMs?: number,
     autoRetry?: { maxRetries: number, backoffMs: number },
     heartbeatMs?: number,
+    staleClaimMinutes?: number,
   } = {},
 ): Rig & { subagents: ReturnType<typeof fakeSubagents>, injections: unknown[] } {
   const store = fakeStore()
@@ -190,6 +191,7 @@ function rig(
     dispatchTimeoutMs: options.dispatchTimeoutMs ?? 3_600_000,
     autoRetry: options.autoRetry ?? { maxRetries: 0, backoffMs: 30_000 },
     heartbeatMs: options.heartbeatMs ?? 0,
+    staleClaimMinutes: options.staleClaimMinutes ?? 0,
   })
   const actor: Actor = { kind: 'human', via: 'panel' }
   return {
@@ -552,6 +554,48 @@ describe('token usage recording (v1.5 S2)', () => {
     const settled = service.get(task.key as string)
     // The rig's agents.get knows no child id -> deterministic estimate, > 0.
     expect(settled?.tokensUsed).toBeGreaterThan(0)
+  })
+})
+
+describe('stale-claim recovery (v1.8 M3)', () => {
+  it('flags claims whose session is gone or idle-with-no-dispatch, past the threshold', async () => {
+    const { service, actor } = rig(128_000, 0)
+    const gone = await service.create({ projectId: PROJECT_ID, title: 'Gone', acceptanceCriteria: ['g'], status: 'open' }, actor)
+    await service.autoClaim(gone.key as string, 'dead-session')
+    const idle = await service.create({ projectId: PROJECT_ID, title: 'Idle', acceptanceCriteria: ['i'], status: 'open' }, actor)
+    await service.autoClaim(idle.key as string, 'session-a') // the rig's live, idle agent
+    const busy = await service.create({ projectId: PROJECT_ID, title: 'Busy', acceptanceCriteria: ['b'], status: 'open' }, actor)
+    await service.autoClaim(busy.key as string, 'session-a')
+    const fresh = await service.create({ projectId: PROJECT_ID, title: 'Fresh', acceptanceCriteria: ['f'], status: 'open' }, actor)
+    await service.autoClaim(fresh.key as string, 'session-a')
+
+    const executions = new Map<string, unknown>()
+    executions.set(busy.id, {}) // a live dispatch protects it
+    const now = Date.now()
+    // Rewrite timestamps so all four claims look old (past the threshold).
+    for (const t of [gone, idle, busy, fresh]) {
+      const stored = service.get(t.key as string)
+      if (stored !== undefined) {
+        service['deps'].store.putTask({ ...stored, updatedAt: now - 2 * 60 * 60_000 })
+      }
+    }
+    const agents = { get: (id: string) => id === 'dead-session' ? undefined : { status: 'idle' } }
+
+    const candidates = staleClaimCandidates(service, agents, executions, now, 60)
+    const keys = candidates.map(task => task.key).sort()
+    // All four are past the threshold (timestamps rewritten above): gone (dead
+    // session) and the two idle-no-dispatch claims are stale; busy is protected
+    // by its live dispatch.
+    expect(keys).toEqual(['TB-1', 'TB-2', 'TB-4'].sort())
+  })
+
+  it('returns nothing when disabled or under the threshold', async () => {
+    const { service, actor } = rig(128_000, 0)
+    const t = await service.create({ projectId: PROJECT_ID, title: 'Safe', acceptanceCriteria: ['s'], status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'gone')
+    const agents = { get: () => undefined }
+    expect(staleClaimCandidates(service, agents, new Map(), Date.now(), 0)).toHaveLength(0)
+    expect(staleClaimCandidates(service, agents, new Map(), Date.now(), 60)).toHaveLength(0) // dwell ~0 < 60
   })
 })
 

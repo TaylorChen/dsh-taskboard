@@ -18,6 +18,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { existsSync, readFileSync } from 'node:fs'
+import { createHmac } from 'node:crypto'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TASKBOARD_DOMAIN, type Project } from './domain.ts'
 import { createStore, type MediumGuard, type TaskboardDomain } from './store.ts'
@@ -80,6 +81,9 @@ export interface Config {
   activityRetentionPerTask: number
   /** v1.5 S1: stuck-detection thresholds in minutes, per waiting status. */
   statsStuckMinutes: { in_progress: number, awaiting_human: number, blocked: number }
+  /** v1.8 M2: outbound event webhook — POSTs a signed payload on every
+   * taskboard write. Empty url disables. */
+  webhook: { url: string, secret: string }
 }
 
 /** Loader schema; the defaults here are the deployment's, not the library's. */
@@ -95,6 +99,7 @@ export const Config: z<Config> = z.object({
     awaiting_human: z.number().step(1).min(1).default(DEFAULT_STATS_STUCK_MINUTES.awaiting_human),
     blocked: z.number().step(1).min(1).default(DEFAULT_STATS_STUCK_MINUTES.blocked),
   }).default({ ...DEFAULT_STATS_STUCK_MINUTES }),
+  webhook: z.object({ url: z.string().default(''), secret: z.string().default('') }).default({ url: '', secret: '' }),
 })
 
 /**
@@ -163,6 +168,41 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
 
   ctx.provide('taskboard', service)
+
+  // v1.8 M2: outbound signed webhook — every taskboard write posts a payload
+  // with an HMAC-SHA256 signature over `timestamp.body`, so a receiver can
+  // verify authenticity and replay protection. Fire-and-forget: a failed
+  // delivery is a warn log, never a retry storm.
+  if (config.webhook.url !== '') {
+    const { url, secret } = config.webhook
+    ctx.on('domain/changed', (change: { domain?: string, table?: string, key?: string, operation?: string }) => {
+      if (change.domain !== 'taskboard') return
+      const body = JSON.stringify({
+        event: 'taskboard.changed',
+        domain: change.domain,
+        table: change.table,
+        key: change.key,
+        operation: change.operation,
+        at: Date.now(),
+      })
+      const timestamp = String(Date.now())
+      let signature = ''
+      if (secret !== '') {
+        signature = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex')
+      }
+      void fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-taskboard-timestamp': timestamp,
+          ...signature === '' ? {} : { 'x-taskboard-signature': `sha256=${signature}` },
+        },
+        body,
+      }).catch(error => ctx.logger.warn(
+        `taskboard: webhook to ${url} failed: ${error instanceof Error ? error.message : String(error)}`,
+      ))
+    })
+  }
   registerCommands(ctx, service, config.listLimit)
 
   // Optional workspace seam (v0.4 W1): `workspaceRegistry` is mounted by the

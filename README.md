@@ -351,6 +351,24 @@ next task's context.
   `chained → <key>`. Pipelines without orchestration code; `dependsOn` stays
   the blocking relationship, `next_task` the triggering one.
 
+## Ecosystem: MCP, signed webhooks, stale-claim recovery (v1.8)
+
+- **MCP server.** `dsh-taskboard-mcp` (bin/mcp-server.mjs) speaks Model
+  Context Protocol over stdio — point Claude Desktop/Code or any MCP client at
+  it and the agent can `task_list` / `task_create` / `task_update` /
+  `task_claim` / `task_block` / `task_comment` / `task_stats` on the board.
+  Boots a profile with storage + taskboard rows (`DSH_MCP_PROFILE`, default
+  `mcp`); writes follow `writePolicy` (use `auto` for headless MCP, `ask`
+  refuses with a message).
+- **Signed webhooks.** The `webhook { url, secret }` config POSTs a
+  `taskboard.changed` payload on every write with
+  `X-Timestamp` + `X-Signature: sha256=<HMAC(secret, ts.body)>` — receivers
+  verify authenticity and replay protection.
+- **Stale-claim recovery.** `staleClaimMinutes` (default 60) on the auto-claim
+  row releases an `in_progress` task whose claiming session is gone — or idle
+  with nothing dispatched — back to 等待认领 with a `recovered: session lost`
+  note, so it is re-claimed instead of stranded (covers process restarts).
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
@@ -378,6 +396,7 @@ in your overlay:
 | `minRemainingTokens` | `8000` | Floor on `contextWindow − totalTokens` before the driver will claim |
 | `subagentProvider` | `spawn` | Provider name for the dispatched child session |
 | `dispatchTimeoutMs` | `1800000` | (v1.1) Dispose an over-running child and settle the task `blocked` |
+| `staleClaimMinutes` | `60` | (v1.8) Release an `in_progress` task whose claim is stale (gone/idle session); `0` disables |
 | `sessionContext` | `false` | (v0.8) Inject a digest of open work + related experience into a new session's first turn |
 | `sessionContextLimit` | `5` | (v0.8) Bound on the digest's open-tasks and experience cards each |
 
@@ -506,6 +525,7 @@ Registered on the host's existing web server; no new port. **Writes require
 | `keyPrefix` | `TB` | Short-id prefix; keys look like `TB-1` |
 | `activityRetentionPerTask` | `50` | Activity entries kept per task before the oldest are trimmed |
 | `statsStuckMinutes` | `{in_progress: 120, awaiting_human: 1440, blocked: 720}` | v1.5 stuck-detection thresholds, in minutes, per waiting status |
+| `webhook` | `{url: '', secret: ''}` | v1.8 outbound signed event webhook (empty url disables) |
 
 ### Scaling past a few hundred tasks
 

@@ -1024,6 +1024,45 @@ export class TaskboardService {
   }
 
   /**
+   * v1.8 M3: recover a stale claim — a task stuck in `in_progress` whose
+   * claiming session is gone (or idle with nothing dispatched) is released
+   * back to `open` with a recovery note, so it can be re-claimed and
+   * re-dispatched (the notes carry the context). A SYSTEM write like
+   * `markForRetry`: refuses only under `writePolicy: 'off'`.
+   * @param ref - short key or full id.
+   * @param driver - the recovery driver's label.
+   * @param dwellMin - how long the claim had been held.
+   * @returns the stored task.
+   */
+  async recoverStaleClaim(ref: TaskRef, driver: string, dwellMin: number): Promise<Task> {
+    const current = this.require(ref)
+    if (this.deps.writePolicy === 'off') {
+      throw new TaskboardError('write-denied', "writePolicy is 'off': stale recovery refused")
+    }
+    const note = `recovered: session lost (claimed ${dwellMin} min ago)`
+    const at = this.now()
+    const next: Task = {
+      ...current,
+      status: 'open',
+      blockedReason: null,
+      claimedBySessionId: null,
+      notes: current.notes === '' ? note : `${current.notes}\n${note}`,
+      revision: current.revision + 1,
+      updatedAt: at,
+    }
+    await this.deps.store.putTask(next)
+    await this.recordActivityLabeled(
+      current.id as TaskId,
+      'noted',
+      null,
+      note,
+      { actor: 'agent', actorLabel: driver },
+      at,
+    )
+    return next
+  }
+
+  /**
    * v1.6 C3: a liveness beat for a dispatched task — appends a `noted`
    * activity entry (`heartbeat: running <n> min`) WITHOUT touching the task,
    * so the activity stream proves the execution is alive between settle

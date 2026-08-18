@@ -154,6 +154,13 @@ export interface Config {
    * stream proves the execution is alive (not stuck silently). 0 disables.
    */
   heartbeatMs: number
+  /**
+   * v1.8 (M3): stale-claim recovery — a task stuck in `in_progress` whose
+   * claiming session is gone, or idle with nothing dispatched, for at least
+   * this many minutes is released back to `open` (with a recovery note) so it
+   * can be re-claimed. 0 disables.
+   */
+  staleClaimMinutes: number
 }
 
 /** Loader schema with the deployment's defaults. */
@@ -168,6 +175,7 @@ export const Config: z<Config> = z.object({
     backoffMs: z.number().step(1).min(0).default(30_000),
   }).default({ maxRetries: 0, backoffMs: 30_000 }),
   heartbeatMs: z.number().step(1).min(0).default(10 * 60 * 1000),
+  staleClaimMinutes: z.number().step(1).min(0).default(60),
 })
 
 /** How much task body the dispatch prompt quotes; the agent can re-read via tools. */
@@ -519,7 +527,27 @@ export function apply(ctx: Context, config: Config): void {
         `taskboard-autoclaim: cancelled dispatched subagent ${execution.run.id} (task ${change.key} left in_progress)`,
       )
     })
+    // v1.8 M3: stale-claim recovery sweep — scan every minute for claims
+    // past their threshold with a gone/idle session and nothing dispatched.
+    let sweep: ReturnType<typeof setInterval> | undefined
+    if (config.staleClaimMinutes > 0) {
+      sweep = setInterval(() => {
+        const now = Date.now()
+        for (const task of staleClaimCandidates(
+          ctx.taskboard, ctx.agents, executions, now, config.staleClaimMinutes,
+        )) {
+          const dwellMin = Math.max(1, Math.round((now - task.updatedAt) / 60_000))
+          void ctx.taskboard.recoverStaleClaim(task.id, 'driver', dwellMin)
+            .catch(error => ctx.logger.warn(
+              `taskboard-autoclaim: stale recovery of ${task.key ?? task.id} failed: ${renderThrown(error)}`,
+            ))
+        }
+      }, 60_000)
+      sweep.unref?.()
+    }
+
     return () => {
+      if (sweep !== undefined) clearInterval(sweep)
       for (const state of states.values()) state.stopping = true
       for (const execution of executions.values()) {
         clearTimeout(execution.timer)
@@ -706,6 +734,32 @@ function inRetryBackoff(
     && newest.action === 'noted'
     && (newest.to ?? '').startsWith('retry ')
     && newest.at > now - backoffMs
+}
+
+/**
+ * v1.8 M3: in_progress tasks whose claim is stale — the claiming session is
+ * gone, or idle with nothing dispatched, for at least `thresholdMin` minutes.
+ * Exported for direct unit testing (the sweep timer just calls it).
+ */
+export function staleClaimCandidates(
+  taskboard: TaskboardService,
+  agents: { get(id: string): unknown },
+  executions: ReadonlyMap<string, unknown>,
+  now: number,
+  thresholdMin: number,
+): Task[] {
+  if (thresholdMin <= 0) return []
+  return taskboard.list({ status: 'in_progress' }).filter(task => {
+    if (task.claimedBySessionId === null) return false
+    const dwellMin = Math.round((now - task.updatedAt) / 60_000)
+    if (dwellMin < thresholdMin) return false
+    const session = agents.get(task.claimedBySessionId)
+    if (session === undefined) return true
+    if (executions.has(task.id)) return false
+    const idle = typeof session === 'object' && session !== null
+      && 'status' in session && (session as { status?: string }).status === 'idle'
+    return idle
+  })
 }
 
 /** The dispatch prompt handed to a background subagent (W2). */

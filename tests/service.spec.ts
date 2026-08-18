@@ -1122,6 +1122,25 @@ describe('task chaining (v1.7 P3)', () => {
   })
 })
 
+describe('stale-claim recovery write (v1.8 M3)', () => {
+  it('releases the claim back to open with a recovery note', async () => {
+    const { service, actor } = build('auto')
+    const t = await service.create({ projectId: PROJECT_ID, title: 'Stuck', acceptanceCriteria: ['s'], status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'dead-session')
+    expect(service.get(t.key as string)?.claimedBySessionId).toBe('dead-session')
+
+    const recovered = await service.recoverStaleClaim(t.key as string, 'driver', 90)
+    expect(recovered.status).toBe('open')
+    expect(recovered.claimedBySessionId).toBeNull()
+    expect(recovered.notes).toContain('recovered: session lost (claimed 90 min ago)')
+    expect(service.activityOf(t.key as string).some(entry =>
+      entry.action === 'noted' && (entry.to ?? '').startsWith('recovered:'))).toBe(true)
+
+    const reclaimed = await service.autoClaim(t.key as string, 'session-2')
+    expect(reclaimed?.claimedBySessionId).toBe('session-2')
+  })
+})
+
 describe('project lifecycle (v1.7 P1)', () => {
   it('creates, renames, and removes an empty project', async () => {
     const { service, actor } = build('auto')

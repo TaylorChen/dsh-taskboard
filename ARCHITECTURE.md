@@ -730,3 +730,29 @@ clears the parent's spec, and notes `chained → <key>`. Chaining is a system
 write (no gate) and idempotent — clearing `nextTask` means a repeat
 confirm cannot re-create. `dependsOn` stays a BLOCKING relationship; `nextTask`
 is the TRIGGERING one — the board now expresses pipelines.
+
+**61. v1.8 (M1): the board speaks MCP.** `bin/mcp-server.mjs` is a standalone
+stdio server (JSON-RPC 2.0, newline-delimited) that boots a storage+taskboard
+profile and exposes seven tools — task_list/create/update/claim/block/
+comment/stats — so any MCP client (Claude Desktop/Code, dsh's own mcp-client)
+can manage the board. External writes carry the normal approval gate:
+`writePolicy: auto` lands them (headless-friendly), `ask` refuses with a clear
+message because MCP has no approval surface. The actor is recorded as `mcp`,
+so the activity stream shows external callers. dsh ships an MCP CLIENT, not a
+server, so this is net-new protocol surface.
+
+**62. v1.8 (M2): events leave the board signed.** A `webhook { url, secret }`
+config (default off) POSTs a `taskboard.changed` payload on every write, with
+`X-Timestamp` and `X-Signature: sha256=<HMAC(secret, ts.body)>` so a receiver
+can verify authenticity and replay-protect. Fire-and-forget: a failed delivery
+is a warn log, never a retry storm.
+
+**63. v1.8 (M3): a stale claim is recovered, not stranded.** A task stuck in
+`in_progress` whose claiming session is gone — or idle with nothing dispatched
+— for `staleClaimMinutes` (default 60, 0 off) is released back to `open` with
+a `recovered: session lost` note, so it can be re-claimed and re-dispatched
+with the notes carrying context. This is the honest checkpoint story in this
+seam: subagent mid-run state is not accessible, but a dead claim is detected
+(the sweep re-scans every minute; after a process restart the executions map
+is empty, so orphaned `in_progress` tasks are naturally covered) and the
+recovery is a system write like `markForRetry`.
