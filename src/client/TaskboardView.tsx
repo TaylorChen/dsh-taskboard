@@ -234,6 +234,12 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [relatedExperience, setRelatedExperience] = useState<Array<{
     key: string, title: string, criteria: string[], artifacts: string[], summary: string
   }>>([])
+  // v1.10 B1: the live pulse bar — SSE connection state + a pulse on every
+  // pushed change, so "live" is visible, not just silent.
+  const [liveState, setLiveState] = useState<'connecting' | 'live' | 'off'>('connecting')
+  const [lastChangeAt, setLastChangeAt] = useState<number | null>(null)
+  const [changeCount, setChangeCount] = useState(0)
+  const [pulseTick, setPulseTick] = useState(0)
 
   /** Fetch the board without touching `busy`; shared by load (busy) and the
    * v1.6 C1 SSE auto-refresh (silent). */
@@ -264,13 +270,20 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   // v1.6 C1: the server pushes `changed` on every taskboard write; reload the
   // board (debounced) so another session's or agent's change appears without
   // polling. EventSource reconnects automatically on drop.
+  // v1.10 B1: the same stream drives the live pulse bar — connection state,
+  // and a visible pulse (plus a fresh "x s ago" stamp) on every change.
   useEffect(() => {
     const source = new EventSource('/api/taskboard/events')
     let timer: ReturnType<typeof setTimeout> | undefined
     const reload = (): void => {
       if (timer !== undefined) clearTimeout(timer)
       timer = setTimeout(() => { void fetchBoard().catch(() => {}) }, 500)
+      setLastChangeAt(Date.now())
+      setChangeCount(count => count + 1)
+      setPulseTick(tick => tick + 1)
     }
+    source.onopen = () => { setLiveState('live') }
+    source.onerror = () => { setLiveState('off') }
     source.addEventListener('changed', reload)
     return () => {
       if (timer !== undefined) clearTimeout(timer)
@@ -696,6 +709,44 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
           )}
         </div>
       )}
+
+      {/* v1.10 B1: the live pulse bar — the board's heartbeat. A green dot
+          with a soft glow while the SSE stream is connected; every pushed
+          change fires a brief pulse and refreshes the "x s ago" stamp, so
+          another session's or agent's activity is visible at a glance. */}
+      <div data-pulse-bar style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, opacity: 0.85, marginBottom: 6 }}>
+        <span
+          key={pulseTick}
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            background: liveState === 'live'
+              ? 'color-mix(in oklab, #2f9e44 75%, currentColor)'
+              : liveState === 'connecting'
+                ? 'color-mix(in oklab, #f76b15 70%, currentColor)'
+                : BLOCKED_TINT,
+            animation: liveState === 'live'
+              ? 'taskboard-pulse 1.6s ease-in-out infinite'
+              : undefined,
+          }}
+        />
+        <span>
+          {liveState === 'live'
+            ? t('live.live')
+            : liveState === 'connecting'
+              ? t('live.connecting')
+              : t('live.off')}
+        </span>
+        {changeCount > 0 && (
+          <>
+            <span style={{ opacity: 0.6 }}>·</span>
+            <span>{changeCount} {t('live.changes')}</span>
+            <span style={{ opacity: 0.6 }}>·</span>
+            <span>{t('live.last')} {lastChangeAt === null ? '—' : `${Math.max(0, Math.round((Date.now() - lastChangeAt) / 1000))}s`}</span>
+          </>
+        )}
+      </div>
 
       {/* v1.5 S1: the stats panel — everything derived from the activity
           stream. Ratios + averages on one row, a 7-day throughput mini-chart
