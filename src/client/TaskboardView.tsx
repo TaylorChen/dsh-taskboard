@@ -860,7 +860,39 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
       )}
 
       {board !== undefined && board.tasks.length === 0 && error === undefined && (
-        <div style={{ ...surface, padding: 24, fontSize: 13, opacity: 0.7, textAlign: 'center' }}>{t('empty')}</div>
+        /* v1.10 B3: first-run magic — an empty board is not a dead end, it
+            is an invitation. The onboarding card explains the three-move
+            loop and offers a one-click start. */
+        <div
+          data-onboarding
+          style={{
+            ...surface,
+            padding: 28,
+            fontSize: 13,
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 12,
+            alignItems: 'center',
+            border: '1px dashed color-mix(in oklab, currentColor 30%, transparent)',
+          }}
+        >
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{t('onboarding.title')}</div>
+          <div style={{ opacity: 0.7 }}>{t('onboarding.subtitle')}</div>
+          <ol style={{ textAlign: 'left', opacity: 0.85, lineHeight: 1.8, margin: 0, paddingLeft: 20 }}>
+            <li>{t('onboarding.step1')}</li>
+            <li>{t('onboarding.step2')}</li>
+            <li>{t('onboarding.step3')}</li>
+          </ol>
+          <button
+            type="button"
+            onClick={() => { openCreate('draft') }}
+            style={{ ...control, fontSize: 13, padding: '6px 14px', cursor: 'pointer' }}
+          >
+            {t('onboarding.create')}
+          </button>
+          <div style={{ fontSize: 11, opacity: 0.55 }}>{t('onboarding.hint')}</div>
+        </div>
       )}
 
       {/* v1.6 C4: search + filters — applied client-side over the loaded
