@@ -436,6 +436,7 @@ further action.
 | PATCH | `/api/taskboard/task/<id\|key>` | Archive/restore: send `{ "archived": true\|false }` (v1.2) |
 | POST | `/api/taskboard/archive-done` | Sweep the whole done column; returns `{ "archived": n }` (v1.3) |
 | POST | `/api/taskboard/reorder` | Pin a column's order: `{ "refs": [<id\|key>…] }` — the column's FULL list (v1.4) |
+| GET | `/api/taskboard/stats` | Board statistics — ratios, averages, 7-day trend, stuck, cost (v1.5) |
 
 Create/update also accept `context_budget_tokens` (input-context cap for the
 dispatched subagent; `null` clears it) since v1.2.
@@ -467,6 +468,7 @@ Registered on the host's existing web server; no new port. **Writes require
 | `defaultProjectName` | `Inbox` | Project seeded when the board opens empty |
 | `keyPrefix` | `TB` | Short-id prefix; keys look like `TB-1` |
 | `activityRetentionPerTask` | `50` | Activity entries kept per task before the oldest are trimmed |
+| `statsStuckMinutes` | `{in_progress: 120, awaiting_human: 1440, blocked: 720}` | v1.5 stuck-detection thresholds, in minutes, per waiting status |
 
 ### Scaling past a few hundred tasks
 
