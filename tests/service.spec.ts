@@ -1056,6 +1056,73 @@ describe('claim release (v1.5 fix)', () => {
   })
 })
 
+describe('metrics governance (v1.9 G1/G2/G3)', () => {
+  it('classifies blocked tasks by settle-failure mode', async () => {
+    const { service, actor } = build('auto', 'allowed-once', { maxTasks: 20 })
+    const reasons: Array<[string, string]> = [
+      ['timeout', 'subagent sub-1 execution timed out after 30000 ms'],
+      ['budget', "subagent sub-1 exceeded the task's token budget"],
+      ['no-report', 'subagent sub-1 finished without a structured report'],
+      ['infra', 'subagent sub-1 failed to run'],
+      ['other', 'the model refused'],
+    ]
+    for (const [expected, reason] of reasons) {
+      const t = await service.create({ projectId: PROJECT_ID, title: `B ${expected}`, status: 'open', acceptanceCriteria: ['b'] }, actor)
+      await service.autoClaim(t.key as string, 'session-x')
+      await service.settleDispatch(t.key as string, 'session-x', { kind: 'error', reason, diagnosis: 'x' })
+    }
+    const stats = service.stats()
+    expect(stats.failureModes.timeout).toBe(1)
+    expect(stats.failureModes.budget).toBe(1)
+    expect(stats.failureModes['no-report']).toBe(1)
+    expect(stats.failureModes.infra).toBe(1)
+    expect(stats.failureModes.other).toBe(1)
+  })
+
+  it('compares agents by success, rework, cycle and cost', async () => {
+    const { service, store, actor } = build('auto')
+    const a = await service.create({ projectId: PROJECT_ID, title: 'A', status: 'open', acceptanceCriteria: ['a'] }, actor)
+    await service.autoClaim(a.key as string, 'session-strong')
+    await service.settleDispatch(a.key as string, 'session-strong', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'a', met: true, note: '' }], artifacts: [], summary: 'ok' },
+    })
+    await service.update(a.key as string, { status: 'done' }, actor)
+    store.putTask({ ...store.tasks.get(a.id) as Task, tokensUsed: 100 })
+
+    const b = await service.create({ projectId: PROJECT_ID, title: 'B', status: 'open', acceptanceCriteria: ['b'] }, actor)
+    await service.autoClaim(b.key as string, 'session-weak')
+    await service.settleDispatch(b.key as string, 'session-weak', { kind: 'error', reason: 'nope', diagnosis: 'x' })
+
+    const byAgent = service.stats().byAgent
+    const strong = byAgent.find(entry => entry.agent === 'session-strong')
+    const weak = byAgent.find(entry => entry.agent === 'session-weak')
+    expect(strong).toMatchObject({ tasks: 1, success: 1, rework: 0, tokens: 100 })
+    expect(weak).toMatchObject({ tasks: 1, success: 0, rework: 0, tokens: 0 })
+    expect(byAgent.length).toBe(2)
+  })
+
+  it('reports a 14-day cumulative flow with today counts per status', async () => {
+    const { service, actor } = build('auto')
+    const done = await service.create({ projectId: PROJECT_ID, title: 'Done', status: 'open', acceptanceCriteria: ['d'] }, actor)
+    await service.autoClaim(done.key as string, 'session-c')
+    await service.settleDispatch(done.key as string, 'session-c', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'd', met: true, note: '' }], artifacts: [], summary: 'ok' },
+    })
+    await service.update(done.key as string, { status: 'done' }, actor)
+    const blocked = await service.create({ projectId: PROJECT_ID, title: 'Blocked', status: 'open', acceptanceCriteria: ['b'] }, actor)
+    await service.autoClaim(blocked.key as string, 'session-c')
+    await service.settleDispatch(blocked.key as string, 'session-c', { kind: 'error', reason: 'stuck', diagnosis: 'x' })
+
+    const cfd = service.stats().cfd
+    expect(cfd.length).toBe(14)
+    const today = cfd[13]
+    expect(today?.counts.done).toBe(1)
+    expect(today?.counts.blocked).toBe(1)
+  })
+})
+
 describe('token usage recording (v1.5 S2)', () => {
   it('stores tokensUsed passed to settleDispatch and keeps it absent otherwise', async () => {
     const { service, actor } = build('auto')

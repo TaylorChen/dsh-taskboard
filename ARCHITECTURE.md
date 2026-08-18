@@ -756,3 +756,30 @@ seam: subagent mid-run state is not accessible, but a dead claim is detected
 (the sweep re-scans every minute; after a process restart the executions map
 is empty, so orphaned `in_progress` tasks are naturally covered) and the
 recovery is a system write like `markForRetry`.
+
+**64. v1.9 (G1): failures are classified, not counted.** `stats().failureModes`
+buckets currently-blocked tasks by their settle reason — `timeout` /
+`budget` / `no-report` / `infra` / `other` — a classification function over
+`blockedReason` patterns (no schema change). The first step of diagnostics:
+"what kind of failure" precedes "how many".
+
+**65. v1.9 (G2): agents are comparable — with the difficulty caveat in the
+room.** `stats().byAgent` slices by the claiming session (the latest `claimed`
+activity's actorLabel): tasks, successes, reworks, average cycle, and
+tokensUsed. This is the input to routing decisions (data-flywheel profiling),
+but the comparison is honest about its limit: no task-difficulty normalization
+exists, so a session carrying hard tasks is not penalized in the docs — the
+numbers are a starting point, not a verdict.
+
+**66. v1.9 (G3): the flow diagram, from the stream.** `stats().cfd` is a
+14-day cumulative-flow: per-status end-of-day counts rebuilt from the activity
+timeline (`statusSegments`, the same walk `dwellByStatus` uses). Today counts
+at the present moment; earlier days at midnight. The activity retention cap
+limits how far back history goes, which is documented rather than hidden.
+
+**67. v1.9 (G4): failures reach out.** The auto-claim driver emits a
+`taskboard/alert` cordis event on the four failure classes — dispatch timeout,
+budget overrun, permanent blocked settle, stale-claim recovery — and the
+webhook row forwards it as a signed `taskboard.alert` payload (same HMAC
+channel as v1.8 M2). Alerts are no-ops when the webhook is off: the event bus
+decouples detection from delivery.

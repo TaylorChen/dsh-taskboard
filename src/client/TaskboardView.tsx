@@ -113,6 +113,9 @@ interface BoardStats {
   ratios: { completionRate: number | null, reworkRate: number | null, agentSuccessRate: number | null, overdueRate: number | null }
   averages: { avgLeadTimeMin: number | null, avgCycleTimeMin: number | null, avgAwaitingHumanMin: number | null, avgBlockedMin: number | null }
   trend: Array<{ day: string, created: number, completed: number }>
+  failureModes: Record<string, number>
+  cfd: Array<{ day: string, counts: Record<string, number> }>
+  byAgent: Array<{ agent: string, tasks: number, success: number, rework: number, avgCycleMin: number | null, tokens: number }>
   stuck: Array<{ key: string, title: string, status: string, dwellMin: number, thresholdMin: number }>
   oldest: Array<{ key: string, title: string, status: string, ageMin: number }>
   cost: { totalTokens: number | null, avgTokensPerTask: number | null, overBudgetCount: number | null }
@@ -680,6 +683,39 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                 <span>{t('stats.cycle')}: {formatMin(stats.averages.avgCycleTimeMin)}</span>
                 <span>{t('stats.awaiting')}: {formatMin(stats.averages.avgAwaitingHumanMin)}</span>
                 <span>{t('stats.blocked')}: {formatMin(stats.averages.avgBlockedMin)}</span>
+              </div>
+              {Object.keys(stats.failureModes).length > 0 && (
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', opacity: 0.9 }}>
+                  {Object.entries(stats.failureModes).map(([mode, count]) => (
+                    <span key={mode}>{mode}: <strong>{count}</strong></span>
+                  ))}
+                </div>
+              )}
+              {stats.byAgent.length > 0 && (
+                <div>
+                  <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('stats.byAgent')}</div>
+                  {stats.byAgent.map(entry => (
+                    <div key={entry.agent} style={{ fontSize: 11, opacity: 0.85, marginBottom: 2 }}>
+                      {entry.agent.slice(0, 12)} · {entry.tasks} tasks · {entry.success}/{entry.tasks} ok · cycle {formatMin(entry.avgCycleMin)} · {entry.tokens} tok
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div>
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('stats.cfd')}</div>
+                <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: 36 }}>
+                  {stats.cfd.map(point => {
+                    const total = Math.max(1, Object.values(point.counts).reduce((a, b) => a + b, 0))
+                    return (
+                      <div key={point.day} title={`${point.day} · ${Object.entries(point.counts).map(([s, n]) => `${s} ${n}`).join(', ')}`}
+                        style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: 1 }}>
+                        {Object.entries(point.counts).map(([status, count]) => (
+                          <div key={status} style={{ height: Math.max(1, Math.round((count / total) * 30)), background: status === 'blocked' || status === 'awaiting_human' ? 'color-mix(in oklab, #e5484d 60%, transparent)' : 'color-mix(in oklab, currentColor 40%, transparent)', borderRadius: 1 }} />
+                        ))}
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
               <div>
                 <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('stats.trend')}</div>

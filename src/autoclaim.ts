@@ -255,6 +255,12 @@ export function apply(ctx: Context, config: Config): void {
    * budget refusal at 258 does not — retrying cannot fix an over-budget
    * prompt); the timeout path stays terminal (v1.1).
    */
+  /** v1.9 G4: emit a proactive alert (the webhook row forwards it when
+   * configured; otherwise it is a no-op cordis event). */
+  function alert(kind: string, task: Task, detail: string): void {
+    ctx.emit('taskboard/alert', { kind, taskKey: task.key ?? task.id, detail })
+  }
+
   async function settleOrRetry(
     task: Task, agent: Agent, run: { id: string }, promptText: string,
     reason: string, diagnosis: string,
@@ -277,6 +283,8 @@ export function apply(ctx: Context, config: Config): void {
         }
       }
     }
+    // v1.9 G4: a permanent blocked settle is an alert (retries are not).
+    alert(reason.includes('token budget') ? 'budget' : 'blocked', task, reason)
     await ctx.taskboard.settleDispatch(
       task.id, agent.id,
       { kind: 'error', reason, diagnosis },
@@ -538,6 +546,7 @@ export function apply(ctx: Context, config: Config): void {
         )) {
           const dwellMin = Math.max(1, Math.round((now - task.updatedAt) / 60_000))
           void ctx.taskboard.recoverStaleClaim(task.id, 'driver', dwellMin)
+            .then(recovered => alert('stale', recovered, `session lost (claimed ${dwellMin} min ago)`))
             .catch(error => ctx.logger.warn(
               `taskboard-autoclaim: stale recovery of ${task.key ?? task.id} failed: ${renderThrown(error)}`,
             ))
@@ -579,6 +588,15 @@ async function timeoutExecution(
     ctx.logger.warn(
       `taskboard-autoclaim: could not dispose timed-out subagent ${execution.run.id}: ${renderThrown(error)}`,
     )
+  }
+  // v1.9 G4: a timeout is a proactive alert.
+  const task = ctx.taskboard.get(taskId)
+  if (task !== undefined) {
+    ctx.emit('taskboard/alert', {
+      kind: 'timeout',
+      taskKey: task.key ?? task.id,
+      detail: `dispatch exceeded ${config.dispatchTimeoutMs} ms`,
+    })
   }
   try {
     await ctx.taskboard.settleDispatch(taskId, execution.sessionId, {

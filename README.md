@@ -369,6 +369,23 @@ next task's context.
   with nothing dispatched — back to 等待认领 with a `recovered: session lost`
   note, so it is re-claimed instead of stranded (covers process restarts).
 
+## Metrics governance: failure modes, agent comparison, flow, alerts (v1.9)
+
+The 统计 panel and `GET /api/taskboard/stats` now act as a governance tool, not
+a report:
+
+- **Failure modes**: currently-blocked tasks are classified by settle reason
+  (`timeout` / `budget` / `no-report` / `infra` / `other`).
+- **By agent**: per-claiming-session comparison — tasks, successes, reworks,
+  average cycle, tokens used. (No task-difficulty normalization: treat the
+  comparison as a starting point, not a verdict.)
+- **Cumulative flow**: a 14-day per-status end-of-day flow built from the
+  activity stream — see queue buildup instead of a static snapshot.
+- **Proactive alerts**: dispatch timeout, budget overrun, permanent blocked
+  settle, and stale-claim recovery each emit a `taskboard.alert` webhook event
+  (signed like the v1.8 webhook) — failures reach out instead of waiting to be
+  found.
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,

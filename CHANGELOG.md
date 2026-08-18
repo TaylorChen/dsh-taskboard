@@ -4,6 +4,33 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.9.0] — 2025-08-17
+
+Metrics governance (from the v1.9 plan): the stats panel stops being a report
+and starts being a diagnostic — failures are classified, agents are
+comparable, flow is visible, and failures reach out.
+
+### Added
+
+- **Failure modes (G1)**: `stats().failureModes` classifies currently-blocked
+  tasks by settle reason (timeout/budget/no-report/infra/other).
+- **By agent (G2)**: `stats().byAgent` slices by claiming session — tasks,
+  successes, reworks, average cycle, tokens — with the difficulty-normalization
+  caveat documented.
+- **Cumulative flow (G3)**: `stats().cfd` — 14-day per-status end-of-day
+  counts rebuilt from the activity timeline; the panel renders a mini stacked
+  flow chart.
+- **Proactive alerts (G4)**: the driver emits `taskboard/alert` on dispatch
+  timeout, budget overrun, permanent blocked settle, and stale-claim recovery;
+  the webhook row forwards it as a signed `taskboard.alert` payload.
+- Real E2E (`tests/e2e/v19-alerts.mjs`): a forced dispatch timeout settles
+  blocked, the sink receives a signed `taskboard.alert` — PASS.
+
+### Migration
+
+None — stats fields are read-only additions; alerts ride the existing webhook
+config.
+
 ## [1.8.0] — 2025-08-17
 
 Ecosystem access (from the v1.8 plan): external agents reach the board over

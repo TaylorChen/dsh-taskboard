@@ -340,6 +340,15 @@ export interface BoardStats {
   }
   /** Last 7 calendar days, oldest first, from activity entries. */
   readonly trend: readonly StatsTrendPoint[]
+  /** v1.9 G1: settle-failure classification of currently blocked tasks. */
+  readonly failureModes: Record<string, number>
+  /** v1.9 G3: last-14-days cumulative-flow — per-status end-of-day counts. */
+  readonly cfd: readonly { day: string, counts: Record<string, number> }[]
+  /** v1.9 G2: per-claiming-session comparison (success/rework/cycle/cost). */
+  readonly byAgent: readonly {
+    agent: string, tasks: number, success: number, rework: number,
+    avgCycleMin: StatsValue, tokens: number,
+  }[]
   /** Waiting tasks past their per-status threshold. */
   readonly stuck: readonly StuckTask[]
   /** The five oldest unfinished (not done/cancelled/archived) tasks. */
@@ -1296,6 +1305,10 @@ export class TaskboardService {
     const total = tasks.length
 
     const ratios = { completion: 0, bounces: 0, agentSuccess: 0, agentError: 0, overdue: 0, active: 0 }
+    const failureModes: Record<string, number> = {}
+    const byAgent = new Map<string, {
+      tasks: number, success: number, rework: number, cycleTotal: number, cycleCount: number, tokens: number,
+    }>()
     const leadTimes: number[] = []
     const cycleTimes: number[] = []
     const awaitingDwells: number[] = []
@@ -1339,6 +1352,30 @@ export class TaskboardService {
 
       const entries = this.deps.store.listActivity(task.id as TaskId)
       const dwell = this.dwellByStatus(entries, now)
+
+      // v1.9 G1: classify currently-blocked tasks by their settle reason.
+      if (task.status === 'blocked' && task.blockedReason !== null) {
+        const mode = TaskboardService.classifyFailure(task.blockedReason)
+        failureModes[mode] = (failureModes[mode] ?? 0) + 1
+      }
+
+      // v1.9 G2: attribute to the claiming session (the latest claim).
+      const claimed = [...entries].filter(entry => entry.action === 'claimed')
+        .sort((a, b) => b.at - a.at)[0]?.actorLabel
+      if (claimed !== undefined) {
+        const entry = byAgent.get(claimed) ?? {
+          tasks: 0, success: 0, rework: 0, cycleTotal: 0, cycleCount: 0, tokens: 0,
+        }
+        entry.tasks += 1
+        if (done || task.status === 'awaiting_human') entry.success += 1
+        if (dwell.in_progress !== undefined) {
+          entry.cycleTotal += dwell.in_progress
+          entry.cycleCount += 1
+        }
+        entry.tokens += task.tokensUsed ?? 0
+        byAgent.set(claimed, entry)
+      }
+
       if (dwell.in_progress !== undefined && done) cycleTimes.push(dwell.in_progress / MIN)
       if (dwell.awaiting_human !== undefined) awaitingDwells.push(dwell.awaiting_human / MIN)
       if (dwell.blocked !== undefined) blockedDwells.push(dwell.blocked / MIN)
@@ -1398,6 +1435,44 @@ export class TaskboardService {
         created: createdByDay.get(day) ?? 0,
         completed: doneByDay.get(day) ?? 0,
       })),
+      failureModes,
+      // v1.9 G3: end-of-day per-status counts over the last 14 days.
+      cfd: (() => {
+        const days: string[] = []
+        for (let i = 13; i >= 0; i -= 1) days.push(dayKey(now - i * 24 * 60 * MIN))
+        const todayStart = new Date(now)
+        todayStart.setHours(0, 0, 0, 0)
+        const cfdMap: Record<string, Record<string, number>> = {}
+        for (const task of tasks) {
+          const segments = this.statusSegments(
+            this.deps.store.listActivity(task.id as TaskId), now,
+          )
+          if (segments.length === 0) continue
+          for (let i = 0; i < days.length; i += 1) {
+            const day = days[i]
+            if (day === undefined) continue
+            // End-of-day boundary: today counts at the present moment (its
+            // end is in the future); earlier days at midnight.
+            const dayStart = todayStart.getTime() + (i - (days.length - 1)) * 24 * 60 * MIN
+            const end = i === days.length - 1 ? now : dayStart + 24 * 60 * MIN
+            const segment = segments.find(seg => seg.start <= end && end <= seg.end)
+            if (segment === undefined) continue
+            const bucket = cfdMap[day] ?? (cfdMap[day] = {})
+            bucket[segment.status] = ((bucket[segment.status] ?? 0) as number) + 1
+          }
+        }
+        return days.map(day => ({ day, counts: cfdMap[day] ?? {} }))
+      })(),
+      byAgent: [...byAgent.entries()].map(([agent, entry]) => ({
+        agent,
+        tasks: entry.tasks,
+        success: entry.success,
+        rework: entry.rework,
+        avgCycleMin: entry.cycleCount === 0
+          ? null
+          : Math.round(entry.cycleTotal / entry.cycleCount / MIN),
+        tokens: entry.tokens,
+      })).sort((a, b) => b.tasks - a.tasks),
       stuck: stuck.sort((a, b) => b.dwellMin - a.dwellMin),
       oldest: oldest.slice(0, 5),
       cost: tokensTasks === 0
@@ -1416,25 +1491,47 @@ export class TaskboardService {
    */
   private dwellByStatus(entries: readonly Activity[], now: number): Record<string, number> {
     const dwell: Record<string, number> = {}
-    let current: string | undefined
-    let start = 0
+    for (const segment of this.statusSegments(entries, now)) {
+      dwell[segment.status] = (dwell[segment.status] ?? 0) + (segment.end - segment.start)
+    }
+    return dwell
+  }
+
+  /**
+   * v1.9 G1: classify a settle-failure reason into a diagnostic bucket.
+   */
+  private static classifyFailure(reason: string): string {
+    if (reason.includes('execution timed out') || reason.includes('timed out')) return 'timeout'
+    if (reason.includes('token budget') || reason.includes('over budget') || reason.includes('context budget')) return 'budget'
+    if (reason.includes('without a structured report')) return 'no-report'
+    if (reason.includes('failed to run')) return 'infra'
+    return 'other'
+  }
+
+  /**
+   * v1.9 G3: one task's status timeline as half-open segments
+   * `[start, end)`, reconstructed from its activity stream (the same walk
+   * `dwellByStatus` uses, but segment-preserving for per-day queries).
+   */
+  private statusSegments(
+    entries: readonly Activity[], now: number,
+  ): Array<{ status: TaskStatus, start: number, end: number }> {
+    const segments: Array<{ status: TaskStatus, start: number, end: number }> = []
     const ordered = [...entries].sort((a, b) => a.at - b.at)
+    let current: TaskStatus | undefined
+    let start = 0
     for (const entry of ordered) {
       const entered = this.enteredStatus(entry)
       if (entered === undefined) continue
-      if (current === undefined) {
-        current = entered
-        start = entry.at
-        continue
-      }
+      if (current === undefined) { current = entered; start = entry.at; continue }
       if (entered !== current) {
-        dwell[current] = (dwell[current] ?? 0) + (entry.at - start)
+        segments.push({ status: current, start, end: entry.at })
         current = entered
         start = entry.at
       }
     }
-    if (current !== undefined) dwell[current] = (dwell[current] ?? 0) + (now - start)
-    return dwell
+    if (current !== undefined) segments.push({ status: current, start, end: now })
+    return segments
   }
 
   /** The status a task enters at one activity entry, or `undefined`. */

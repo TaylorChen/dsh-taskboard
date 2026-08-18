@@ -38,6 +38,10 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     taskboard: TaskboardService
   }
+  interface Events {
+    /** v1.9 G4: proactive failure alerts emitted by the auto-claim driver. */
+    'taskboard/alert': (alert: { kind: string, taskKey: string, detail: string }) => void
+  }
 }
 
 export { TaskboardService, isSpecComplete } from './service.ts'
@@ -175,16 +179,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // delivery is a warn log, never a retry storm.
   if (config.webhook.url !== '') {
     const { url, secret } = config.webhook
-    ctx.on('domain/changed', (change: { domain?: string, table?: string, key?: string, operation?: string }) => {
-      if (change.domain !== 'taskboard') return
-      const body = JSON.stringify({
-        event: 'taskboard.changed',
-        domain: change.domain,
-        table: change.table,
-        key: change.key,
-        operation: change.operation,
-        at: Date.now(),
-      })
+    const post = (event: string, payload: Record<string, unknown>): void => {
+      const body = JSON.stringify({ event, ...payload, at: Date.now() })
       const timestamp = String(Date.now())
       let signature = ''
       if (secret !== '') {
@@ -201,6 +197,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       }).catch(error => ctx.logger.warn(
         `taskboard: webhook to ${url} failed: ${error instanceof Error ? error.message : String(error)}`,
       ))
+    }
+    ctx.on('domain/changed', (change: { domain?: string, table?: string, key?: string, operation?: string }) => {
+      if (change.domain !== 'taskboard') return
+      post('taskboard.changed', {
+        domain: change.domain,
+        table: change.table,
+        key: change.key,
+        operation: change.operation,
+      })
+    })
+    // v1.9 G4: proactive alerts — the auto-claim driver emits these on
+    // timeout / budget / blocked-settle / stale-recovery.
+    ctx.on('taskboard/alert', (alert: { kind: string, taskKey: string, detail: string }) => {
+      post('taskboard.alert', { kind: alert.kind, taskKey: alert.taskKey, detail: alert.detail })
     })
   }
   registerCommands(ctx, service, config.listLimit)
