@@ -240,6 +240,9 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [lastChangeAt, setLastChangeAt] = useState<number | null>(null)
   const [changeCount, setChangeCount] = useState(0)
   const [pulseTick, setPulseTick] = useState(0)
+  // v1.10 B2: the human review panel — a task awaiting confirmation, opened
+  // for evidence-first review (certificate + related experience + decide).
+  const [reviewTask, setReviewTask] = useState<BoardTask | null>(null)
 
   /** Fetch the board without touching `busy`; shared by load (busy) and the
    * v1.6 C1 SSE auto-refresh (silent). */
@@ -424,6 +427,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [formDraft])
 
+  /** Escape closes the human review panel (v1.10 B2). */
+  useEffect(() => {
+    if (reviewTask === null) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setReviewTask(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [reviewTask])
+
   /** v1.10 A2: while the create form is open, fetch the project's related
    * experience ("what worked before") for the memory section. Silent —
    * a slow or failing read just leaves the section empty. */
@@ -448,6 +461,30 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     })()
     return () => controller.abort()
   }, [createFormProjectId])
+
+  /** v1.10 B2: the review panel also shows the project's related experience —
+   * "what worked before" — as a second opinion for the human decision. */
+  const reviewProjectId = reviewTask?.projectId ?? null
+  useEffect(() => {
+    if (reviewProjectId === null) return
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/taskboard/experience?project=${encodeURIComponent(reviewProjectId)}&limit=3`,
+          { signal: controller.signal },
+        )
+        if (!response.ok) return
+        const cards = await response.json() as Array<{
+          key: string, title: string, criteria: string[], artifacts: string[], summary: string
+        }>
+        setRelatedExperience(cards)
+      } catch {
+        // Silent — the panel still shows the certificate either way.
+      }
+    })()
+    return () => controller.abort()
+  }, [reviewProjectId])
 
   /** Save the spec editor: one acceptance criterion per line, then the card
    * may move to open. */
@@ -1248,6 +1285,17 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                       })()}
                       {task.status === 'awaiting_human' && (
                         <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                          {/* v1.10 B2: evidence-first review — the human
+                              decides with the full certificate + related
+                              experience on screen, not in a 160px column. */}
+                          <button
+                            type="button"
+                            data-review={task.id}
+                            onClick={() => { setReviewTask(task) }}
+                            style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer', flex: 1 }}
+                          >
+                            {t('review.open')}
+                          </button>
                           <button
                             type="button"
                             onClick={() => {
@@ -1740,6 +1788,204 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                     {t('cancel')}
                   </button>
                 </div>
+              </div>
+            </div>
+          </>
+        )
+      })()}
+
+      {/* v1.10 B2: the human review panel — evidence-first decision. The task
+          awaiting confirmation is laid out for review: the full certificate
+          (per-criterion marks, copyable artifacts, summary), the related
+          experience of the project, and the two decisions (confirm / bounce
+          with reason). Nothing else competes for attention. */}
+      {reviewTask !== null && (() => {
+        const task = reviewTask
+        const score = evidenceScore(task.evidence)
+        const verdict = evidenceVerdict(score)
+        const verdictTint = verdict === 'verified'
+          ? 'color-mix(in oklab, #2f9e44 65%, currentColor)'
+          : verdict === 'partial'
+            ? 'color-mix(in oklab, #f76b15 60%, currentColor)'
+            : 'color-mix(in oklab, currentColor 45%, transparent)'
+        return (
+          <>
+            <div
+              onClick={() => { setReviewTask(null) }}
+              style={{ position: 'absolute', inset: 0, zIndex: 40, background: 'color-mix(in oklab, currentColor 18%, transparent)', backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)' }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={t('review.title')}
+              data-review-panel
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: 560,
+                maxWidth: 'calc(100% - 32px)',
+                maxHeight: '85%',
+                overflowY: 'auto',
+                zIndex: 41,
+                background: 'color-mix(in oklab, currentColor 12%, transparent)',
+                backdropFilter: 'blur(16px) saturate(1.3)',
+                WebkitBackdropFilter: 'blur(16px) saturate(1.3)',
+                border: '1px solid color-mix(in oklab, currentColor 18%, transparent)',
+                borderRadius: 10,
+                boxShadow: '0 16px 48px color-mix(in oklab, currentColor 25%, transparent)',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, borderBottom: '1px solid color-mix(in oklab, currentColor 12%, transparent)' }}>
+                <strong style={{ fontSize: 13, flex: 1 }}>{t('review.title')}</strong>
+                <span style={{ fontSize: 11, opacity: 0.6 }}>
+                  {task.key ?? task.id.slice(0, 8)} · {projectName(task.projectId)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setReviewTask(null) }}
+                  style={{ ...control, cursor: 'pointer' }}
+                  title={t('cancel')}
+                >
+                  ×
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{task.title}</div>
+                <div style={{ fontSize: 11, opacity: 0.7, lineHeight: 1.5, whiteSpace: 'pre-line' }}>
+                  {task.body !== '' ? task.body : t('review.noBody')}
+                </div>
+                {/* the certificate — the evidence is the basis of the decision */}
+                {task.evidence !== null && (
+                  <div
+                    data-certificate
+                    style={{
+                      ...surface,
+                      padding: 10,
+                      fontSize: 11,
+                      lineHeight: 1.4,
+                      border: `1px solid color-mix(in oklab, ${verdict === 'verified' ? '#2f9e44' : verdict === 'partial' ? '#f76b15' : 'currentColor'} 35%, transparent)`,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <span style={{ fontWeight: 700, flex: 1 }}>{t('evidence.certificate')}</span>
+                      <span style={{ fontSize: 10, opacity: 0.6 }}>{evidenceStamp(task.key, task.updatedAt)}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: verdictTint, whiteSpace: 'nowrap' }}>
+                        {score.met}/{score.total} · {t(`evidence.${verdict}` as TaskboardKey)}
+                      </span>
+                    </div>
+                    {task.evidence.criteria.map((entry, index) => (
+                      <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
+                        <span style={{ color: entry.met ? undefined : BLOCKED_TINT }}>
+                          {entry.met ? '✓' : '✗'}
+                        </span>
+                        <span style={{ flex: 1 }}>
+                          {entry.criterion}
+                          {entry.note !== '' && <span style={{ opacity: 0.6 }}> — {entry.note}</span>}
+                        </span>
+                      </div>
+                    ))}
+                    {task.evidence.artifacts.length > 0 && (
+                      <div style={{ opacity: 0.7, marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                        <span>{t('evidence.artifacts')}:</span>
+                        {task.evidence.artifacts.map(artifact => (
+                          <button
+                            key={artifact}
+                            type="button"
+                            data-artifact={artifact}
+                            onClick={() => {
+                              void navigator.clipboard.writeText(artifact).then(() => {
+                                setCopiedArtifact(artifact)
+                                window.setTimeout(() => {
+                                  setCopiedArtifact(current => current === artifact ? null : current)
+                                }, 1400)
+                              })
+                            }}
+                            title={artifact}
+                            style={{
+                              ...control,
+                              fontSize: 10,
+                              padding: '1px 6px',
+                              cursor: 'pointer',
+                              maxWidth: 180,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {copiedArtifact === artifact ? t('evidence.copied') : artifact}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {task.evidence.summary !== '' && (
+                      <div style={{ opacity: 0.7, marginTop: 4 }}>{task.evidence.summary}</div>
+                    )}
+                  </div>
+                )}
+                {/* related experience — what this project already learned */}
+                {relatedExperience.length > 0 && (
+                  <div data-experience style={{ ...surface, padding: 8, fontSize: 11, lineHeight: 1.4 }}>
+                    <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('experience.title')}</div>
+                    {relatedExperience.map(card => (
+                      <div key={card.key} style={{ marginBottom: 4 }}>
+                        <span style={{ fontWeight: 700 }}>{card.key}</span> — {card.title}
+                        {card.summary !== '' && <div style={{ opacity: 0.7 }}>{card.summary}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    type="button"
+                    data-confirm-done
+                    onClick={() => {
+                      void write(
+                        `/api/taskboard/task/${encodeURIComponent(task.id)}`,
+                        'PATCH',
+                        { status: 'done', expectedRevision: task.revision },
+                      ).then(() => { setReviewTask(null) })
+                    }}
+                    style={{ ...control, fontSize: 13, padding: '6px 12px', cursor: 'pointer', flex: 1 }}
+                  >
+                    {t('evidence.confirm')}
+                  </button>
+                  <button
+                    type="button"
+                    data-bounce-open
+                    onClick={() => { setBounceDraft({ taskId: task.id, reason: '' }) }}
+                    style={{ ...control, fontSize: 13, padding: '6px 12px', cursor: 'pointer', flex: 1 }}
+                  >
+                    {t('evidence.bounce')}
+                  </button>
+                </div>
+                {bounceDraft?.taskId === task.id && (
+                  <div style={{ ...surface, display: 'flex', flexDirection: 'column', gap: 6, padding: 8 }}>
+                    <input
+                      autoFocus
+                      value={bounceDraft.reason}
+                      placeholder={t('bounce.reason')}
+                      onChange={event => { setBounceDraft({ taskId: task.id, reason: event.target.value }) }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') void confirmBounce(task).then(() => { setReviewTask(null) })
+                        if (event.key === 'Escape') setBounceDraft(null)
+                      }}
+                      style={{ ...control, fontSize: 11 }}
+                    />
+                    <button
+                      type="button"
+                      data-bounce-confirm
+                      onClick={() => { void confirmBounce(task).then(() => { setReviewTask(null) }) }}
+                      disabled={busy || bounceDraft.reason.trim() === ''}
+                      style={{ ...control, fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+                    >
+                      {t('bounce.confirm')}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </>
