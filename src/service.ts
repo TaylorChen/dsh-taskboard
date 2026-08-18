@@ -41,6 +41,7 @@ import {
   type TaskId,
   type TaskPriority,
   type TaskSpec,
+  TASK_STATUSES,
   type TaskStatus,
 } from './domain.ts'
 import { TaskboardError } from './errors.ts'
@@ -133,6 +134,11 @@ export interface TaskboardDeps {
   readonly keyPrefix: string
   /** Activity entries kept per task before the oldest are trimmed. */
   readonly activityRetentionPerTask: number
+  /**
+   * v1.5 S1: stuck-detection thresholds in minutes, per "waiting" status.
+   * Missing keys fall back to the defaults (120 / 1440 / 720).
+   */
+  readonly statsStuckMinutes?: Partial<Record<'in_progress' | 'awaiting_human' | 'blocked', number>>
   /** Injected for tests; defaults to `Date.now`. */
   readonly now?: () => number
   /** Injected for tests; defaults to `crypto.randomUUID`. */
@@ -259,6 +265,74 @@ export interface ExecutionInfo {
 
 /** A task's activity stream, newest first (the presentation order). */
 export type ActivityStream = readonly Activity[]
+
+/** One ratio or average the stats endpoint reports; `null` when there is
+ * no data for it (e.g. no task ever reached a status). */
+export type StatsValue = number | null
+
+/** One trend bucket (v1.5 S1): created vs completed on one calendar day. */
+export interface StatsTrendPoint {
+  /** `YYYY-M-D` local calendar day. */
+  readonly day: string
+  readonly created: number
+  readonly completed: number
+}
+
+/** One stuck task (v1.5 S1): waiting longer than its status threshold. */
+export interface StuckTask {
+  readonly key: string
+  readonly title: string
+  readonly status: TaskStatus
+  readonly dwellMin: number
+  readonly thresholdMin: number
+}
+
+/** One of the oldest unfinished tasks. */
+export interface OldestTask {
+  readonly key: string
+  readonly title: string
+  readonly status: TaskStatus
+  readonly ageMin: number
+}
+
+/** The board-level statistics payload (v1.5 S1). Everything is derived from
+ * the activity stream + current board — no extra instrumentation. */
+export interface BoardStats {
+  readonly ratios: {
+    /** done / all stored tasks (archived + cancelled included). */
+    readonly completionRate: StatsValue
+    /** awaiting_human → draft bounces / tasks that reached done. */
+    readonly reworkRate: StatsValue
+    /** settles that landed awaiting_human / all settles. */
+    readonly agentSuccessRate: StatsValue
+    /** active tasks past their deadline / active tasks. */
+    readonly overdueRate: StatsValue
+  }
+  readonly averages: {
+    /** created → done, in minutes, over tasks that reached done. */
+    readonly avgLeadTimeMin: StatsValue
+    /** total in_progress dwell, in minutes, over tasks that reached done. */
+    readonly avgCycleTimeMin: StatsValue
+    /** awaiting_human dwell, in minutes, over tasks that ever waited. */
+    readonly avgAwaitingHumanMin: StatsValue
+    /** blocked dwell, in minutes, over tasks that ever blocked. */
+    readonly avgBlockedMin: StatsValue
+  }
+  /** Last 7 calendar days, oldest first, from activity entries. */
+  readonly trend: readonly StatsTrendPoint[]
+  /** Waiting tasks past their per-status threshold. */
+  readonly stuck: readonly StuckTask[]
+  /** The five oldest unfinished (not done/cancelled/archived) tasks. */
+  readonly oldest: readonly OldestTask[]
+  readonly cost: {
+    /** Sum of `tokensUsed`; `null` until any task measured usage (v1.5 S2). */
+    readonly totalTokens: StatsValue
+    /** `totalTokens / tasks with a measurement`. */
+    readonly avgTokensPerTask: StatsValue
+    /** Tasks whose `tokensUsed` exceeded `budgetTokens`. */
+    readonly overBudgetCount: StatsValue
+  }
+}
 
 /**
  * The task-board service. Reads are synchronous (the provider serves from
@@ -489,6 +563,7 @@ export class TaskboardService {
       archivedAt: null,
       contextBudgetTokens: input.contextBudgetTokens ?? null,
       sortOrder: null,
+      tokensUsed: null,
       revision: 0,
       createdAt: at,
       updatedAt: at,
@@ -559,9 +634,16 @@ export class TaskboardService {
       priority: patch.priority ?? current.priority,
       labels: patch.labels === undefined ? current.labels : [...patch.labels],
       workspaceId,
-      claimedBySessionId: patch.claimedBySessionId === undefined
-        ? current.claimedBySessionId
-        : patch.claimedBySessionId,
+      // Leaving `in_progress` releases the claim — a cancelled, bounced, or
+      // completed task is no longer on that session's hands and must be
+      // re-claimable (v1.5: the rework loop would otherwise stall forever,
+      // because autoClaim refuses an already-claimed task). Symmetric with
+      // `blockedReason`, which clears on leaving `blocked`.
+      claimedBySessionId: status === 'in_progress'
+        ? patch.claimedBySessionId === undefined
+          ? current.claimedBySessionId
+          : patch.claimedBySessionId
+        : patch.claimedBySessionId === undefined ? null : patch.claimedBySessionId,
       blockedReason,
       spec,
       dependsOn,
@@ -590,6 +672,7 @@ export class TaskboardService {
       )
     }
     await this.deps.store.putTask(next)
+    const change = activityFor(current, next)
     // v0.9: an appended note is its own activity entry, not a plain edit.
     if (patch.note !== undefined) {
       await this.recordActivity(
@@ -600,10 +683,14 @@ export class TaskboardService {
         actor,
         next.updatedAt,
       )
-      return next
     }
-    const change = activityFor(current, next)
-    await this.recordActivity(next.id as TaskId, change.action, change.from, change.to, actor, next.updatedAt)
+    // The note does NOT swallow a concurrent status change: a bounce (status →
+    // draft + note) must still leave its `status` entry, or the activity
+    // stream cannot reconstruct the timeline (v1.5 S1 relies on it). Only a
+    // note-only edit skips the 'edited' branch — there the note IS the edit.
+    if (change.action !== 'edited' || patch.note === undefined) {
+      await this.recordActivity(next.id as TaskId, change.action, change.from, change.to, actor, next.updatedAt)
+    }
     return next
   }
 
@@ -723,6 +810,7 @@ export class TaskboardService {
     outcome:
       | { kind: 'completed', evidence: TaskEvidence }
       | { kind: 'error', reason: string, diagnosis: string },
+    tokensUsed?: number | null,
   ): Promise<Task | null> {
     const settled = this.claimChain.then(async () => {
       const current = this.resolve(ref)
@@ -741,6 +829,9 @@ export class TaskboardService {
             artifacts: [],
             summary: outcome.diagnosis,
           },
+        // v1.5 S2: the driver measures the child's actual usage at settle;
+        // absent a measurement the field stays as-is (null for fresh tasks).
+        tokensUsed: tokensUsed === undefined ? current.tokensUsed : tokensUsed,
         revision: current.revision + 1,
         updatedAt: at,
       }
@@ -911,6 +1002,184 @@ export class TaskboardService {
         artifacts: task.evidence?.artifacts ?? [],
         summary: task.evidence?.summary ?? '',
       }))
+  }
+
+  /**
+   * Board-level statistics (v1.5 S1): ratios, averages, a 7-day trend, stuck
+   * detection, and cost — ALL derived from the activity stream + the current
+   * board, no extra instrumentation. See {@link BoardStats}.
+   *
+   * Status dwell is reconstructed by walking each task's activity in
+   * chronological order: `created`/`status`/`completed`/`blocked` entries
+   * enter the status in `to` (a `claimed` entry enters `in_progress` — the
+   * claim path records no `status` entry), and a segment closes at the next
+   * enter. The activity retention cap means the earliest segments of very old
+   * tasks may be missing; the averages then cover the available data.
+   * @returns the statistics payload.
+   */
+  stats(): BoardStats {
+    const now = this.now()
+    const MIN = 60_000
+    const threshold = {
+      in_progress: this.deps.statsStuckMinutes?.in_progress ?? 120,
+      awaiting_human: this.deps.statsStuckMinutes?.awaiting_human ?? 1440,
+      blocked: this.deps.statsStuckMinutes?.blocked ?? 720,
+    }
+    const tasks = this.deps.store.listTasks()
+    const total = tasks.length
+
+    const ratios = { completion: 0, bounces: 0, agentSuccess: 0, agentError: 0, overdue: 0, active: 0 }
+    const leadTimes: number[] = []
+    const cycleTimes: number[] = []
+    const awaitingDwells: number[] = []
+    const blockedDwells: number[] = []
+    const createdByDay = new Map<string, number>()
+    const doneByDay = new Map<string, number>()
+    const stuck: StuckTask[] = []
+    const oldest: OldestTask[] = []
+    let tokensTotal = 0
+    let tokensTasks = 0
+    let overBudget = 0
+
+    const dayKey = (at: number): string => {
+      const d = new Date(at)
+      return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+    }
+    const trendDays: string[] = []
+    for (let i = 6; i >= 0; i -= 1) trendDays.push(dayKey(now - i * 24 * 60 * MIN))
+    const mean = (xs: number[]): StatsValue =>
+      xs.length === 0 ? null : Math.round(xs.reduce((sum, value) => sum + value, 0) / xs.length)
+
+    for (const task of tasks) {
+      const done = task.status === 'done'
+      if (done) ratios.completion += 1
+      const active = task.archivedAt === null && !done && task.status !== 'cancelled'
+      if (active) {
+        ratios.active += 1
+        if (task.dueAt !== null && task.dueAt < now) ratios.overdue += 1
+        oldest.push({
+          key: task.key ?? task.id,
+          title: task.title,
+          status: task.status,
+          ageMin: Math.max(0, Math.round((now - task.createdAt) / MIN)),
+        })
+      }
+      if (task.tokensUsed !== null) {
+        tokensTotal += task.tokensUsed
+        tokensTasks += 1
+        if (task.budgetTokens !== null && task.tokensUsed > task.budgetTokens) overBudget += 1
+      }
+
+      const entries = this.deps.store.listActivity(task.id as TaskId)
+      const dwell = this.dwellByStatus(entries, now)
+      if (dwell.in_progress !== undefined && done) cycleTimes.push(dwell.in_progress / MIN)
+      if (dwell.awaiting_human !== undefined) awaitingDwells.push(dwell.awaiting_human / MIN)
+      if (dwell.blocked !== undefined) blockedDwells.push(dwell.blocked / MIN)
+      const doneEnter = [...entries]
+        .filter(entry => entry.action === 'status' && entry.to === 'done')
+        .sort((a, b) => a.at - b.at)[0]?.at
+      if (doneEnter !== undefined) leadTimes.push((doneEnter - task.createdAt) / MIN)
+
+      for (const entry of entries) {
+        if (entry.action === 'status' && entry.from === 'awaiting_human' && entry.to === 'draft') {
+          ratios.bounces += 1
+        }
+        if (entry.action === 'completed' && entry.to === 'awaiting_human') ratios.agentSuccess += 1
+        if (entry.action === 'completed' && entry.to === 'blocked') ratios.agentError += 1
+        const day = dayKey(entry.at)
+        if (entry.action === 'created') createdByDay.set(day, (createdByDay.get(day) ?? 0) + 1)
+        if (entry.action === 'status' && entry.to === 'done') doneByDay.set(day, (doneByDay.get(day) ?? 0) + 1)
+      }
+
+      const statusThreshold = threshold[task.status as keyof typeof threshold]
+      const dwellHere = dwell[task.status]
+      if (statusThreshold !== undefined && task.archivedAt === null
+        && dwellHere !== undefined && dwellHere >= statusThreshold * MIN) {
+        stuck.push({
+          key: task.key ?? task.id,
+          title: task.title,
+          status: task.status,
+          dwellMin: Math.round(dwellHere / MIN),
+          thresholdMin: statusThreshold,
+        })
+      }
+    }
+
+    oldest.sort((a, b) => a.ageMin - b.ageMin)
+    const settles = ratios.agentSuccess + ratios.agentError
+    return {
+      ratios: {
+        completionRate: total === 0 ? null : Math.round((ratios.completion / total) * 1000) / 10,
+        reworkRate: ratios.completion === 0
+          ? null
+          : Math.round((ratios.bounces / ratios.completion) * 1000) / 10,
+        agentSuccessRate: settles === 0
+          ? null
+          : Math.round((ratios.agentSuccess / settles) * 1000) / 10,
+        overdueRate: ratios.active === 0
+          ? null
+          : Math.round((ratios.overdue / ratios.active) * 1000) / 10,
+      },
+      averages: {
+        avgLeadTimeMin: mean(leadTimes),
+        avgCycleTimeMin: mean(cycleTimes),
+        avgAwaitingHumanMin: mean(awaitingDwells),
+        avgBlockedMin: mean(blockedDwells),
+      },
+      trend: trendDays.map(day => ({
+        day,
+        created: createdByDay.get(day) ?? 0,
+        completed: doneByDay.get(day) ?? 0,
+      })),
+      stuck: stuck.sort((a, b) => b.dwellMin - a.dwellMin),
+      oldest: oldest.slice(0, 5),
+      cost: tokensTasks === 0
+        ? { totalTokens: null, avgTokensPerTask: null, overBudgetCount: null }
+        : {
+          totalTokens: tokensTotal,
+          avgTokensPerTask: Math.round(tokensTotal / tokensTasks),
+          overBudgetCount: overBudget,
+        },
+    }
+  }
+
+  /**
+   * v1.5 S1: dwell in each status, in ms, reconstructed from one task's
+   * activity stream. See {@link TaskboardService.stats} for the rules.
+   */
+  private dwellByStatus(entries: readonly Activity[], now: number): Record<string, number> {
+    const dwell: Record<string, number> = {}
+    let current: string | undefined
+    let start = 0
+    const ordered = [...entries].sort((a, b) => a.at - b.at)
+    for (const entry of ordered) {
+      const entered = this.enteredStatus(entry)
+      if (entered === undefined) continue
+      if (current === undefined) {
+        current = entered
+        start = entry.at
+        continue
+      }
+      if (entered !== current) {
+        dwell[current] = (dwell[current] ?? 0) + (entry.at - start)
+        current = entered
+        start = entry.at
+      }
+    }
+    if (current !== undefined) dwell[current] = (dwell[current] ?? 0) + (now - start)
+    return dwell
+  }
+
+  /** The status a task enters at one activity entry, or `undefined`. */
+  private enteredStatus(entry: Activity): TaskStatus | undefined {
+    if (entry.action === 'claimed') return 'in_progress'
+    if (entry.action === 'status' || entry.action === 'created' || entry.action === 'completed') {
+      return TASK_STATUSES.includes(entry.to as TaskStatus) ? entry.to as TaskStatus : undefined
+    }
+    if (entry.action === 'blocked') {
+      return TASK_STATUSES.includes(entry.to as TaskStatus) ? entry.to as TaskStatus : 'blocked'
+    }
+    return undefined
   }
 
   /**

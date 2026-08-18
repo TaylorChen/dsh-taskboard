@@ -188,6 +188,12 @@ export const taskSchema = z.object({
    */
   sortOrder: z.number().int().nonnegative().nullable().default(null),
   /**
+   * Actual input-context tokens consumed by the dispatched subagent (v1.5 S2):
+   * recorded at settle as the delta over the pre-dispatch baseline. `null` =
+   * not yet measured. Feeds the stats cost dimension; additive `.default(null)`.
+   */
+  tokensUsed: z.number().int().nonnegative().nullable().default(null),
+  /**
    * Who created this task. Added after v1 shipped, so it carries a `default`
    * rather than bumping `DOMAIN_VERSION`: a stored record written before the
    * field existed still parses, and reads back as `agent`. Adding an optional

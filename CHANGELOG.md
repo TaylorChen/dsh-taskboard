@@ -4,6 +4,43 @@ All notable changes to `@navidid/dsh-taskboard` are recorded here.
 Versions follow [SemVer](https://semver.org/); the storage layer has no
 migration path, so every breaking change ships with a migration note.
 
+## [1.5.0] — 2025-08-17
+
+Metrics and the collaboration loop (from the v1.5 plan): the board measures
+itself, actual cost is recorded, and the human's notes reach the executing
+agent.
+
+### Added
+
+- **Board statistics (S1)**: `TaskboardService.stats()` + `GET
+  /api/taskboard/stats` + a panel stats section — ratios (completion, rework,
+  agent success, overdue), averages (lead/cycle/awaiting/blocked dwells
+  reconstructed from the activity timeline), a 7-day throughput trend, stuck
+  detection (per-status thresholds via `statsStuckMinutes`), the oldest
+  unfinished tasks, and token cost. All derived from the activity stream — no
+  extra instrumentation.
+- **Actual token usage (S2)**: `tokensUsed` (addition, default null) recorded
+  at settle — the driver measures the child session through the token meter,
+  falling back to the deterministic prompt estimate when the child is already
+  disposed. Feeds the stats cost dimension.
+- **Notes reach the agent (S3)**: the dispatch prompt now quotes the task's
+  notes (bounded); bounce reasons land in notes as `bounce: …`, so a
+  re-dispatched task carries why automatically.
+- **Fix**: a note-appending update used to swallow its concurrent status entry
+  (early return), breaking activity-timeline reconstruction for bounces; the
+  status change is now recorded alongside the `noted` entry.
+- **Fix**: leaving `in_progress` (cancel, bounce, confirm) now releases the
+  claim — previously a bounced task kept `claimedBySessionId`, so autoClaim
+  refused it forever and the rework loop stalled. Symmetric with
+  `blockedReason` clearing on leaving `blocked`.
+- Real E2E (`tests/e2e/v15-stats.mjs`): known-history stats numbers verified,
+  a real dispatched round records `tokensUsed > 0`, and the child echoes a
+  note-seeded instruction.
+
+### Migration
+
+None — additive `tokensUsed` field and config; `stats` is read-only.
+
 ## [1.4.2] — 2025-08-17
 
 Create and edit now share ONE task-form modal — the same fields, create starts

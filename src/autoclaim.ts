@@ -313,7 +313,7 @@ export function apply(ctx: Context, config: Config): void {
                       artifacts: report.artifacts,
                       summary: report.summary,
                     },
-                  })
+                  }, measureChildTokens(run, promptText, ctx))
                   return
                 }
                 // No valid structured capture: no half-evidence — settle as error.
@@ -321,7 +321,7 @@ export function apply(ctx: Context, config: Config): void {
                   kind: 'error',
                   reason: `subagent ${run.id} finished without a structured report`,
                   diagnosis: tailOf(result.output),
-                })
+                }, measureChildTokens(run, promptText, ctx))
                 return
               }
               // v0.7 W3: a child that hit its token ceiling is a budget
@@ -333,7 +333,7 @@ export function apply(ctx: Context, config: Config): void {
                   ? `subagent ${run.id} exceeded the task's token budget`
                   : `subagent ${run.id} ended with ${result.stopReason}`,
                 diagnosis: tailOf(result.output),
-              })
+              }, measureChildTokens(run, promptText, ctx))
             } catch (error) {
               ctx.logger.warn(
                 `taskboard-autoclaim: could not settle dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(error)}`,
@@ -349,7 +349,7 @@ export function apply(ctx: Context, config: Config): void {
                 kind: 'error',
                 reason: `subagent ${run.id} failed to run`,
                 diagnosis: renderThrown(error),
-              })
+              }, measureChildTokens(run, promptText, ctx))
             } catch (failure) {
               ctx.logger.warn(
                 `taskboard-autoclaim: could not settle failed dispatch of ${claimed.key ?? claimed.id}: ${renderThrown(failure)}`,
@@ -577,6 +577,30 @@ export function estimateInputTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
+/**
+ * v1.5 S2: measure the dispatched child's actual input-context usage at settle.
+ * The child session is looked up by its run id and measured through the token
+ * meter; by settle time it may already be disposed, in which case the
+ * deterministic dispatch-prompt estimate (`ceil(chars / 4)`) stands in — a
+ * documented approximation, not a metered figure.
+ * @param run - the finished subagent run (its id IS the child session id).
+ * @param promptText - the dispatch prompt, for the fallback estimate.
+ * @param ctx - context carrying `agents` and `tokenMeter`.
+ * @returns measured tokens, or the estimate; never `null` in practice.
+ */
+function measureChildTokens(run: { id: string }, promptText: string, ctx: Context): number {
+  try {
+    const child = ctx.agents.get(run.id as never)
+    if (child !== undefined) {
+      const measured = ctx.tokenMeter.measure(child.session).totalTokens
+      if (Number.isFinite(measured) && measured >= 0) return Math.round(measured)
+    }
+  } catch {
+    // fall through to the estimate
+  }
+  return estimateInputTokens(promptText)
+}
+
 /** The dispatch prompt handed to a background subagent (W2). */
 function renderDispatchPrompt(task: Task): string {
   const key = task.key ?? task.id
@@ -595,6 +619,12 @@ function renderDispatchPrompt(task: Task): string {
       ? `\nDefinition of done: ${spec.definitionOfDone}`
       : undefined,
     task.body === '' ? undefined : `\nTask description:\n${bounded(task.body)}`,
+    // v1.5 S3: the human's notes (incl. a bounce reason, which lands in notes
+    // as `bounce: …`) are part of the execution context — without this the
+    // dispatched agent can never see the instruction the human left.
+    task.notes === ''
+      ? undefined
+      : `\nNotes from the human (follow these):\n${clip(task.notes, 1000)}`,
     '\nWhen finished, report as a JSON object with exactly these fields:\n'
     + '- criteria: array of {criterion: <one acceptance criterion>, met: <true|false>, note: <evidence or reason>}\n'
     + '- artifacts: array of produced file paths / commit hashes\n'

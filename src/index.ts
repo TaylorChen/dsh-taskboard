@@ -25,6 +25,7 @@ import { TaskboardService } from './service.ts'
 import { registerCommands } from './commands.ts'
 import {
   DEFAULT_ACTIVITY_RETENTION_PER_TASK,
+  DEFAULT_STATS_STUCK_MINUTES,
   DEFAULT_KEY_PREFIX,
   DEFAULT_LIST_LIMIT,
   DEFAULT_MAX_TASKS,
@@ -77,6 +78,8 @@ export interface Config {
   keyPrefix: string
   /** Activity entries kept per task before the oldest are trimmed. */
   activityRetentionPerTask: number
+  /** v1.5 S1: stuck-detection thresholds in minutes, per waiting status. */
+  statsStuckMinutes: { in_progress: number, awaiting_human: number, blocked: number }
 }
 
 /** Loader schema; the defaults here are the deployment's, not the library's. */
@@ -87,6 +90,11 @@ export const Config: z<Config> = z.object({
   defaultProjectName: z.string().default('Inbox'),
   keyPrefix: z.string().min(1).default(DEFAULT_KEY_PREFIX),
   activityRetentionPerTask: z.number().step(1).min(1).default(DEFAULT_ACTIVITY_RETENTION_PER_TASK),
+  statsStuckMinutes: z.object({
+    in_progress: z.number().step(1).min(1).default(DEFAULT_STATS_STUCK_MINUTES.in_progress),
+    awaiting_human: z.number().step(1).min(1).default(DEFAULT_STATS_STUCK_MINUTES.awaiting_human),
+    blocked: z.number().step(1).min(1).default(DEFAULT_STATS_STUCK_MINUTES.blocked),
+  }).default({ ...DEFAULT_STATS_STUCK_MINUTES }),
 })
 
 /**
@@ -125,6 +133,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     maxTasks: config.maxTasks,
     keyPrefix: config.keyPrefix,
     activityRetentionPerTask: config.activityRetentionPerTask,
+    statsStuckMinutes: config.statsStuckMinutes,
   })
 
   // One-time short-id backfill. v0.1 records carry no `key`, and a fresh board

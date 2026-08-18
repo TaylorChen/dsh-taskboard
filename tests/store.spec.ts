@@ -68,7 +68,8 @@ function task(id: string, revision: number): Task {
     updatedAt: 0, workspaceId: null, blockedReason: null, claimedBySessionId: null,
     spec: null, evidence: null, executor: 'any', dueAt: null, notes: '',
     archivedAt: null, contextBudgetTokens: null,
-        sortOrder: null, dependsOn: [], budgetTokens: null,
+        sortOrder: null,
+        tokensUsed: null, dependsOn: [], budgetTokens: null,
     createdAt: 0,
   }
 }

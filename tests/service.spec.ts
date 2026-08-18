@@ -338,6 +338,7 @@ describe('short ids', () => {
         archivedAt: null,
         contextBudgetTokens: null,
       sortOrder: null,
+      tokensUsed: null,
         revision: 0,
         createdAt,
         updatedAt: createdAt,
@@ -538,6 +539,7 @@ describe('auto-claim', () => {
       archivedAt: null,
       contextBudgetTokens: null,
       sortOrder: null,
+      tokensUsed: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -712,6 +714,7 @@ describe('task spec (v0.5 L2)', () => {
       archivedAt: null,
       contextBudgetTokens: null,
       sortOrder: null,
+      tokensUsed: null,
       revision: 0,
       createdAt: 0,
       updatedAt: 0,
@@ -1023,6 +1026,53 @@ describe('context budget (v1.2 B2)', () => {
   })
 })
 
+describe('claim release (v1.5 fix)', () => {
+  it('releases the claim when a task leaves in_progress, so it can be re-claimed', async () => {
+    const { service, actor } = build('auto')
+    const t = await service.create({ projectId: PROJECT_ID, title: 'Rework', acceptanceCriteria: ['w'], status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'session-1')
+    expect(service.get(t.key as string)?.claimedBySessionId).toBe('session-1')
+
+    // Bounce to draft (the panel's 打回待立项) — the claim must drop.
+    await service.update(t.key as string, { status: 'draft', note: 'bounce: redo' }, actor)
+    expect(service.get(t.key as string)?.claimedBySessionId).toBeNull()
+
+    // Back to open and claimable again.
+    await service.update(t.key as string, { status: 'open' }, actor)
+    const reclaimed = await service.autoClaim(t.key as string, 'session-2')
+    expect(reclaimed?.claimedBySessionId).toBe('session-2')
+  })
+
+  it('keeps the claim while the task stays in_progress', async () => {
+    const { service, actor } = build('auto')
+    const t = await service.create({ projectId: PROJECT_ID, title: 'Held', acceptanceCriteria: ['w'], status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'session-1')
+    await service.update(t.key as string, { title: 'Held 2' }, actor)
+    expect(service.get(t.key as string)?.claimedBySessionId).toBe('session-1')
+  })
+})
+
+describe('token usage recording (v1.5 S2)', () => {
+  it('stores tokensUsed passed to settleDispatch and keeps it absent otherwise', async () => {
+    const { service, actor } = build('auto')
+    const a = await service.create({ projectId: PROJECT_ID, title: 'A', acceptanceCriteria: ['a'] }, actor)
+    await service.autoClaim(a.key as string, 'session-1')
+    const measured = await service.settleDispatch(a.key as string, 'session-1', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'a', met: true, note: '' }], artifacts: [], summary: 'ok' },
+    }, 4321)
+    expect(measured?.tokensUsed).toBe(4321)
+
+    const b = await service.create({ projectId: PROJECT_ID, title: 'B', acceptanceCriteria: ['b'] }, actor)
+    await service.autoClaim(b.key as string, 'session-1')
+    const unmeasured = await service.settleDispatch(b.key as string, 'session-1', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'b', met: true, note: '' }], artifacts: [], summary: 'ok' },
+    })
+    expect(unmeasured?.tokensUsed).toBeNull()
+  })
+})
+
 describe('manual ordering (v1.4 E3)', () => {
   it('pins a column order, ranks by sortOrder then recency', async () => {
     const { service, actor } = build('auto')
@@ -1070,6 +1120,124 @@ describe('manual ordering (v1.4 E3)', () => {
     await service.reorder([openB.key as string, openA.key as string])
     expect(service.list({ status: 'open' }).map(task => task.title)).toEqual(['OB', 'OA'])
     expect(service.get(draftX.key as string)?.sortOrder).toBeNull()
+  })
+})
+
+describe('board statistics (v1.5 S1)', () => {
+  /** A service whose clock advances one minute per `now()` call, so activity
+   * timestamps and dwells are deterministic. */
+  function buildTimed(stuckMinutes?: Partial<Record<'in_progress' | 'awaiting_human' | 'blocked', number>>) {
+    const store = fakeStore()
+    const approval = fakeApproval('allowed-once')
+    let clock = 1_000_000
+    let idSeq = 0
+    const service = new TaskboardService({
+      store,
+      approval,
+      writePolicy: 'auto',
+      maxTasks: 50,
+      keyPrefix: 'TB',
+      activityRetentionPerTask: 50,
+      statsStuckMinutes: stuckMinutes,
+      now: () => { clock += 60_000; return clock },
+      newId: () => `stats-id-${++idSeq}`,
+    })
+    const actor: Actor = { kind: 'human', via: 'panel' }
+    return { service, store, actor }
+  }
+
+  it('derives lead/cycle/awaiting dwell and ratios from the activity stream', async () => {
+    const { service, actor } = buildTimed()
+    const t = await service.create(
+      { projectId: PROJECT_ID, title: 'Loop', acceptanceCriteria: ['ok'], status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'session-1')
+    await service.settleDispatch(t.key as string, 'session-1', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'ok', met: true, note: '' }], artifacts: [], summary: 'done' },
+    })
+    await service.update(t.key as string, { status: 'done' }, actor)
+
+    const stats = service.stats()
+    expect(stats.ratios.completionRate).toBe(100)
+    expect(stats.ratios.agentSuccessRate).toBe(100)
+    expect(stats.ratios.reworkRate).toBe(0) // 1 done, 0 bounces
+    expect(stats.averages.avgLeadTimeMin).toBe(3)   // created -> done: 3 min of clock
+    expect(stats.averages.avgCycleTimeMin).toBe(1)  // in_progress dwell: claim -> settle
+    expect(stats.averages.avgAwaitingHumanMin).toBe(1) // awaiting -> done
+    expect(stats.trend).toHaveLength(7)
+    expect(stats.trend[6]?.created).toBeGreaterThanOrEqual(1)
+    expect(stats.trend[6]?.completed).toBeGreaterThanOrEqual(1)
+  })
+
+  it('counts a bounce (awaiting_human -> draft) as rework and splits dwell', async () => {
+    const { service, actor } = buildTimed()
+    const t = await service.create(
+      { projectId: PROJECT_ID, title: 'Rework', acceptanceCriteria: ['ok'], status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'session-1')
+    await service.settleDispatch(t.key as string, 'session-1', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'ok', met: true, note: '' }], artifacts: [], summary: 'first' },
+    })
+    // Bounce back to draft (the panel's 打回待立项 path).
+    await service.update(t.key as string, { status: 'draft', note: 'bounce: redo it' }, actor)
+    // Re-spec, re-claim, settle again, confirm done.
+    await service.update(t.key as string, { status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'session-1')
+    await service.settleDispatch(t.key as string, 'session-1', {
+      kind: 'completed',
+      evidence: { criteria: [{ criterion: 'ok', met: true, note: '' }], artifacts: [], summary: 'second' },
+    })
+    await service.update(t.key as string, { status: 'done' }, actor)
+
+    const stats = service.stats()
+    expect(stats.ratios.reworkRate).toBe(100) // 1 bounce / 1 done
+    expect(stats.ratios.agentSuccessRate).toBe(100) // 2 completed settles, both awaiting_human
+    expect(stats.ratios.completionRate).toBe(100)
+  })
+
+  it('flags a task stuck past its configured threshold', async () => {
+    const { service, actor } = buildTimed({ blocked: 1 })
+    const t = await service.create(
+      { projectId: PROJECT_ID, title: 'Stuck', acceptanceCriteria: ['ok'], status: 'open' }, actor)
+    await service.autoClaim(t.key as string, 'session-1')
+    await service.settleDispatch(t.key as string, 'session-1', {
+      kind: 'error',
+      reason: 'ran out',
+      diagnosis: 'subagent failed',
+    })
+
+    const stats = service.stats()
+    expect(stats.stuck).toHaveLength(1)
+    expect(stats.stuck[0]?.key).toBe(t.key)
+    expect(stats.stuck[0]?.status).toBe('blocked')
+    expect(stats.stuck[0]?.dwellMin).toBeGreaterThanOrEqual(1)
+    expect(stats.stuck[0]?.thresholdMin).toBe(1)
+  })
+
+  it('reports cost from measured token usage, with over-budget detection', async () => {
+    const { service, store, actor } = buildTimed()
+    const a = await service.create({ projectId: PROJECT_ID, title: 'A', acceptanceCriteria: ['a'] }, actor)
+    const b = await service.create({ projectId: PROJECT_ID, title: 'B', acceptanceCriteria: ['b'] }, actor)
+    // No service method sets tokensUsed yet (v1.5 S2); write the records
+    // directly to exercise the stats cost dimension.
+    store.putTask({ ...store.tasks.get(a.id) as Task, tokensUsed: 500, budgetTokens: 400 })
+    store.putTask({ ...store.tasks.get(b.id) as Task, tokensUsed: 100, budgetTokens: null })
+
+    const stats = service.stats()
+    expect(stats.cost.totalTokens).toBe(600)
+    expect(stats.cost.avgTokensPerTask).toBe(300)
+    expect(stats.cost.overBudgetCount).toBe(1)
+  })
+
+  it('reports cost as null before any measurement and lists oldest unfinished', async () => {
+    const { service, actor } = buildTimed()
+    await service.create({ projectId: PROJECT_ID, title: 'Old', acceptanceCriteria: ['o'] }, actor)
+    const stats = service.stats()
+    expect(stats.cost.totalTokens).toBeNull()
+    expect(stats.cost.avgTokensPerTask).toBeNull()
+    expect(stats.cost.overBudgetCount).toBeNull()
+    expect(stats.oldest).toHaveLength(1)
+    expect(stats.oldest[0]?.key).toBe('TB-1')
   })
 })
 

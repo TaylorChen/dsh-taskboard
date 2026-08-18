@@ -637,3 +637,34 @@ column renders in storage order, so the v1.2 overdue float (a render hint)
 never gets baked into `sortOrder`. Reorder is status-wide, not
 status+project: the panel's column is one status, and a project filter hides
 other projects' ids from it.
+
+**51. v1.5 (S1): the board measures itself — from the activity stream, not new
+instrumentation.** Every status transition has been recorded as an activity
+entry (`created`/`status`/`completed`/`blocked`/`claimed` with from/to/at)
+since v0.2, so all time metrics are derivable. `stats()` reconstructs each
+task's status timeline by walking entries chronologically: `created`/`status`/
+`completed`/`blocked` enter the status in `to`, and a `claimed` entry enters
+`in_progress` (the claim path records no `status` entry). A segment closes at
+the next enter; the final segment runs to now. From that: lead time (created →
+done), cycle time (in_progress dwell over done tasks), awaiting-human and
+blocked dwell, rework (awaiting_human → draft bounces), agent success
+(completed settles to awaiting_human vs blocked), a 7-day throughput trend,
+stuck detection (per-status thresholds, `Config.statsStuckMinutes`), and —
+once S2 measures it — token cost. One fix the metrics demanded: a note
+appending update used to swallow its concurrent status entry (an early
+`return`), which broke timeline reconstruction for bounces; the note is now
+its own entry and the status change is recorded alongside it.
+
+**52. v1.5 (S2): actual cost is measured, with a documented fallback.** The
+subagent seam's result carries no usage figure, so at settle the driver looks
+the child session up by its run id (`ctx.agents.get(run.id)`) and measures it
+through the token meter; a child already disposed by settle time falls back to
+the deterministic dispatch-prompt estimate (`ceil(chars / 4)`). `tokensUsed`
+(addition, default null) is recorded at settle and feeds the stats cost
+dimension — the first number that is a *spend*, not a *cap*.
+
+**53. v1.5 (S3): the human's notes reach the executing agent.** Notes were
+human-side only — a bounce reason or steering note in `notes` never appeared
+in the dispatch prompt, so the child could not act on it. The dispatch prompt
+now quotes the notes (bounded, `clip` 1000 chars); because bounces land in
+notes as `bounce: …`, a bounced task's re-dispatch automatically carries why.

@@ -25,6 +25,13 @@ export const DEFAULT_KEY_PREFIX = 'TB'
 /** Default activity entries kept per task before the oldest are trimmed. */
 export const DEFAULT_ACTIVITY_RETENTION_PER_TASK = 50
 
+/** v1.5 S1: stuck-detection thresholds, in minutes, per "waiting" status. */
+export const DEFAULT_STATS_STUCK_MINUTES = {
+  in_progress: 120,
+  awaiting_human: 1440,
+  blocked: 720,
+} as const
+
 /** Characters of task body quoted into an approval payload before truncation. */
 export const APPROVAL_BODY_PREVIEW_CHARS = 300
 

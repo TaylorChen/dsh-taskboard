@@ -108,6 +108,16 @@ interface BoardPayload {
   executions: Record<string, { subagentId: string, startedAt: number }>
 }
 
+/** v1.5 S1: the /stats payload — ratios, averages, trend, stuck, cost. */
+interface BoardStats {
+  ratios: { completionRate: number | null, reworkRate: number | null, agentSuccessRate: number | null, overdueRate: number | null }
+  averages: { avgLeadTimeMin: number | null, avgCycleTimeMin: number | null, avgAwaitingHumanMin: number | null, avgBlockedMin: number | null }
+  trend: Array<{ day: string, created: number, completed: number }>
+  stuck: Array<{ key: string, title: string, status: string, dwellMin: number, thresholdMin: number }>
+  oldest: Array<{ key: string, title: string, status: string, ageMin: number }>
+  cost: { totalTokens: number | null, avgTokensPerTask: number | null, overBudgetCount: number | null }
+}
+
 /** One activity entry as the activity route serves it. */
 interface ActivityEntry {
   id: string
@@ -193,6 +203,10 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   // v1.4 E3: the card being dragged and the card currently under the cursor.
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
+  // v1.5 S1: the expandable stats panel — ratios, trend, stuck, cost.
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [stats, setStats] = useState<BoardStats | null>(null)
+  const [statsError, setStatsError] = useState<string | undefined>(undefined)
 
   const load = useCallback(async (): Promise<void> => {
     setBusy(true)
@@ -215,6 +229,32 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   }, [archivedView, projectFilter])
 
   useEffect(() => { void load() }, [load])
+
+  /** v1.5 S1: fetch the stats payload on demand (only when the panel opens). */
+  const loadStats = useCallback(async (): Promise<void> => {
+    setStatsError(undefined)
+    try {
+      const response = await fetch('/api/taskboard/stats')
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      setStats(await response.json() as BoardStats)
+    } catch (cause) {
+      setStatsError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [])
+
+  const toggleStats = useCallback((): void => {
+    if (!statsOpen) void loadStats()
+    setStatsOpen(open => !open)
+  }, [statsOpen, loadStats])
+
+  const formatMin = (min: number | null): string => {
+    if (min === null) return '—'
+    if (min < 60) return `${min}m`
+    if (min < 24 * 60) return `${Math.round(min / 60)}h`
+    return `${(min / (24 * 60)).toFixed(1)}d`
+  }
+
+  const percent = (value: number | null): string => value === null ? '—' : `${value}%`
 
   /** Send one write and refresh; surfaces the server's own message on refusal. */
   const write = useCallback(async (path: string, method: string, body: unknown): Promise<void> => {
@@ -485,6 +525,15 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         >
           {archivedView ? t('archive.active') : t('archive.view')}
         </button>
+        {/* v1.5 S1: the stats panel toggle — ratios, trend, stuck, cost. */}
+        <button
+          type="button"
+          onClick={toggleStats}
+          style={{ ...control, cursor: 'pointer' }}
+          title={t('stats.button')}
+        >
+          {statsOpen ? t('stats.hide') : t('stats.button')}
+        </button>
         <button
           type="button"
           onClick={() => { void load() }}
@@ -511,6 +560,78 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
           <span>{t('stats.done')}: {board.tasks.filter(task => task.status === 'done').length}</span>
           {projectFilter !== 'all' && !archivedView && (
             <span style={{ opacity: 0.55 }}>{t('sort.hint')}</span>
+          )}
+        </div>
+      )}
+
+      {/* v1.5 S1: the stats panel — everything derived from the activity
+          stream. Ratios + averages on one row, a 7-day throughput mini-chart
+          (pure CSS bars), stuck tasks in warning colour, oldest open. */}
+      {statsOpen && (
+        <div style={{ ...surface, padding: 10, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+          {statsError !== undefined && (
+            <div style={{ color: BLOCKED_TINT }}>{t('error')}: {statsError}</div>
+          )}
+          {stats === null && statsError === undefined && (
+            <div style={{ opacity: 0.6 }}>{t('loading')}</div>
+          )}
+          {stats !== null && (
+            <>
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', opacity: 0.9 }}>
+                <span>{t('stats.completion')}: <strong>{percent(stats.ratios.completionRate)}</strong></span>
+                <span>{t('stats.rework')}: <strong>{percent(stats.ratios.reworkRate)}</strong></span>
+                <span>{t('stats.success')}: <strong>{percent(stats.ratios.agentSuccessRate)}</strong></span>
+                <span style={stats.ratios.overdueRate !== null && stats.ratios.overdueRate > 0 ? { color: BLOCKED_TINT } : undefined}>
+                  {t('stats.overdueRate')}: <strong>{percent(stats.ratios.overdueRate)}</strong>
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', opacity: 0.85 }}>
+                <span>{t('stats.lead')}: {formatMin(stats.averages.avgLeadTimeMin)}</span>
+                <span>{t('stats.cycle')}: {formatMin(stats.averages.avgCycleTimeMin)}</span>
+                <span>{t('stats.awaiting')}: {formatMin(stats.averages.avgAwaitingHumanMin)}</span>
+                <span>{t('stats.blocked')}: {formatMin(stats.averages.avgBlockedMin)}</span>
+              </div>
+              <div>
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('stats.trend')}</div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', height: 44 }}>
+                  {stats.trend.map(point => {
+                    const height = Math.max(2, Math.round((point.completed / Math.max(1, ...stats.trend.map(p => p.completed))) * 36))
+                    return (
+                      <div key={point.day} title={`${point.day} · ${t('stats.done')} ${point.completed} / ${t('stats.new')} ${point.created}`}
+                        style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                        <div style={{ width: 14, height, background: 'color-mix(in oklab, currentColor 45%, transparent)', borderRadius: 2 }} />
+                        <span style={{ fontSize: 9, opacity: 0.55 }}>{point.day.slice(5)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              {stats.stuck.length > 0 && (
+                <div>
+                  <div style={{ opacity: 0.7, marginBottom: 4, color: BLOCKED_TINT }}>{t('stats.stuck')}</div>
+                  {stats.stuck.map(task => (
+                    <div key={task.key} style={{ fontSize: 11, color: BLOCKED_TINT, marginBottom: 2 }}>
+                      {task.key} {task.title} · {t('stats.waitingMin')} {formatMin(task.dwellMin)} / {t('stats.thresholdMin')} {formatMin(task.thresholdMin)}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {stats.oldest.length > 0 && (
+                <div>
+                  <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('stats.oldest')}</div>
+                  {stats.oldest.map(task => (
+                    <div key={task.key} style={{ fontSize: 11, opacity: 0.85, marginBottom: 2 }}>
+                      {task.key} {task.title} · {t(`column.${task.status}` as TaskboardKey)} · {formatMin(task.ageMin)}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {stats.cost.totalTokens !== null && (
+                <div style={{ opacity: 0.85 }}>
+                  {t('stats.cost')}: {stats.cost.totalTokens} tok · {t('stats.avgPerTask')} {stats.cost.avgTokensPerTask} · {t('stats.overBudget')} {stats.cost.overBudgetCount}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

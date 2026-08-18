@@ -506,6 +506,79 @@ describe('auto-claim driver', () => {
   })
 })
 
+describe('token usage recording (v1.5 S2)', () => {
+  it('records the measurable child session usage at settle', async () => {
+    const { service, actor, subagents, emitIdle, settle, ctx } = rig(128_000, 0, { withSubagents: true })
+    // The child session is looked up by its run id at settle; make any
+    // unknown id resolve to a measurable child, and the meter report 987.
+    const mutable = ctx as unknown as {
+      agents: { get: (id: string) => unknown }
+      tokenMeter: { measure: () => { totalTokens: number } }
+    }
+    const realGet = mutable.agents.get.bind(mutable.agents)
+    mutable.agents.get = (id: string) => realGet(id) ?? ({ session: { id: `child-${id}` } })
+    mutable.tokenMeter = { measure: () => ({ totalTokens: 987 }) }
+
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Measured', acceptanceCriteria: ['w'] }, actor)
+    emitIdle()
+    await settle()
+    subagents.settleNext('completed', {
+      criteria: [{ criterion: 'w', met: true, note: '' }], artifacts: [], summary: 'ok',
+    })
+    await settle()
+
+    const settled = service.get(task.key as string)
+    expect(settled?.status).toBe('awaiting_human')
+    expect(settled?.tokensUsed).toBe(987)
+  })
+
+  it('falls back to the dispatch-prompt estimate when the child is gone', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    const task = await service.create(
+      { projectId: PROJECT_ID, title: 'Gone child', acceptanceCriteria: ['w'] }, actor)
+    emitIdle()
+    await settle()
+    subagents.settleNext('completed', {
+      criteria: [{ criterion: 'w', met: true, note: '' }], artifacts: [], summary: 'ok',
+    })
+    await settle()
+
+    const settled = service.get(task.key as string)
+    // The rig's agents.get knows no child id -> deterministic estimate, > 0.
+    expect(settled?.tokensUsed).toBeGreaterThan(0)
+  })
+})
+
+describe('notes reach the dispatched agent (v1.5 S3)', () => {
+  it('quotes the task notes (incl. bounce reasons) into the dispatch prompt', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    await service.create({
+      projectId: PROJECT_ID,
+      title: 'Noted work',
+      acceptanceCriteria: ['w'],
+      notes: 'bounce: please use the sqlite path this time',
+    }, actor)
+
+    emitIdle()
+    await settle()
+
+    expect(subagents.starts).toHaveLength(1)
+    const prompt = subagents.starts[0]?.prompt[0]?.text ?? ''
+    expect(prompt).toContain('bounce: please use the sqlite path this time')
+    expect(prompt).toContain('Notes from the human')
+  })
+
+  it('omits the notes section when the task has none', async () => {
+    const { service, actor, subagents, emitIdle, settle } = rig(128_000, 0, { withSubagents: true })
+    await service.create({ projectId: PROJECT_ID, title: 'Plain', acceptanceCriteria: ['w'] }, actor)
+    emitIdle()
+    await settle()
+    const prompt = subagents.starts[0]?.prompt[0]?.text ?? ''
+    expect(prompt).not.toContain('Notes from the human')
+  })
+})
+
 describe('input-context estimate (v1.2 B2)', () => {
   it('approximates tokens as ceil(chars / 4)', () => {
     expect(estimateInputTokens('')).toBe(0)

@@ -94,6 +94,9 @@ export function apply(ctx: Context): void {
 
   route(`${BASE}/export`, 'exact', (_req, res) => json(res, 200, ctx.taskboard.exportAll()))
 
+  // v1.5 S1: board-level statistics — ratios, averages, trend, stuck, cost.
+  route(`${BASE}/stats`, 'exact', (_req, res) => json(res, 200, ctx.taskboard.stats()))
+
   // v1.3 D4: one-click sweep of the done column — the panel's 归档全部 button.
   // A governance write like single-task archiving: human-initiated, no approval.
   route(`${BASE}/archive-done`, 'exact', async (req, res) => {

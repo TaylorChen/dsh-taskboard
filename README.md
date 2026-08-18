@@ -295,6 +295,29 @@ next task's context.
   /api/taskboard/reorder`, whole-column). Overdue cards still float to the top
   as a render hint; the manual order is the storage fact underneath.
 
+## Board statistics, cost, and human-to-agent notes (v1.5)
+
+- **Board statistics.** The 统计 button opens a stats panel — everything
+  derived from the activity stream, no extra instrumentation:
+  - **Ratios**: completion, rework (bounces / done), agent success (settles
+    that landed 等你确认 vs 遇到阻碍), overdue rate.
+  - **Averages**: lead time (created → done), cycle time (in_progress dwell),
+    awaiting-you time, blocked time — per-status dwell reconstructed from the
+    activity timeline.
+  - **Trend**: a 7-day throughput mini-chart (created vs completed per day).
+  - **Stuck**: tasks waiting past their threshold (in_progress 120 min,
+    awaiting_human 1440, blocked 720 — `statsStuckMinutes`), plus the five
+    oldest unfinished tasks.
+  - **Cost**: actual tokens used by dispatched subagents (see below).
+  Also served as `GET /api/taskboard/stats`.
+- **Actual token usage.** The driver measures the dispatched child's session
+  at settle (`tokensUsed`; falls back to the prompt estimate when the child is
+  already disposed) — the first number that is a spend, not a cap. Until a
+  task has a measurement, the stats cost row shows nothing.
+- **Notes reach the agent.** A bounce reason or steering note in `notes` is now
+  quoted into the dispatch prompt — the executing agent finally sees the
+  human's instruction (bounces carry `bounce: …` automatically).
+
 ## Automatic claiming (v0.3)
 
 The board can hand work to an idle agent by itself — bound to **token quota**,
