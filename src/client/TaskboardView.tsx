@@ -684,14 +684,14 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                 <span>{t('stats.awaiting')}: {formatMin(stats.averages.avgAwaitingHumanMin)}</span>
                 <span>{t('stats.blocked')}: {formatMin(stats.averages.avgBlockedMin)}</span>
               </div>
-              {Object.keys(stats.failureModes).length > 0 && (
+              {Object.keys(stats.failureModes ?? {}).length > 0 && (
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', opacity: 0.9 }}>
                   {Object.entries(stats.failureModes).map(([mode, count]) => (
                     <span key={mode}>{mode}: <strong>{count}</strong></span>
                   ))}
                 </div>
               )}
-              {stats.byAgent.length > 0 && (
+              {(stats.byAgent ?? []).length > 0 && (
                 <div>
                   <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('stats.byAgent')}</div>
                   {stats.byAgent.map(entry => (
@@ -704,7 +704,7 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
               <div>
                 <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('stats.cfd')}</div>
                 <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: 36 }}>
-                  {stats.cfd.map(point => {
+                  {(stats.cfd ?? []).map(point => {
                     const total = Math.max(1, Object.values(point.counts).reduce((a, b) => a + b, 0))
                     return (
                       <div key={point.day} title={`${point.day} · ${Object.entries(point.counts).map(([s, n]) => `${s} ${n}`).join(', ')}`}
