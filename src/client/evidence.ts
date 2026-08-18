@@ -49,3 +49,22 @@ export function evidenceStamp(key: string | undefined, updatedAt: number | null 
     : new Date(updatedAt).toLocaleDateString()
   return `${key ?? 'task'} · ${date}`
 }
+
+/**
+ * v1.10 A3: the bounce note — the human's reason PLUS a digest of the rejected
+ * evidence, so the next dispatch starts from the memory of what was tried and
+ * why it was bounced ("打回带记忆"). Safe on missing evidence.
+ */
+export function bounceMemoryNote(reason: string, evidence: CertificateEvidence | null | undefined): string {
+  const parts = [`bounce: ${reason}`]
+  const summary = evidence?.summary.trim() ?? ''
+  const artifacts = evidence?.artifacts ?? []
+  if (summary !== '' || artifacts.length > 0) {
+    const digest = [
+      summary !== '' ? summary : null,
+      artifacts.length > 0 ? `artifacts: ${artifacts.join(', ')}` : null,
+    ].filter((part): part is string => part !== null).join('; ')
+    parts.push(`rejected evidence — ${digest}`)
+  }
+  return parts.join('; ')
+}

@@ -4,7 +4,7 @@
  * tests/e2e/v110-a5.py.
  */
 import { describe, expect, it } from 'vitest'
-import { evidenceScore, evidenceStamp, evidenceVerdict } from '../src/client/evidence.ts'
+import { bounceMemoryNote, evidenceScore, evidenceStamp, evidenceVerdict } from '../src/client/evidence.ts'
 
 describe('v1.10 A5 certificate helpers', () => {
   it('evidenceScore counts met criteria and the ratio', () => {
@@ -45,5 +45,27 @@ describe('v1.10 A5 certificate helpers', () => {
     expect(evidenceStamp(undefined, null)).toBe('task · —')
     expect(evidenceStamp('TB-9', NaN)).toBe('TB-9 · —')
     expect(evidenceStamp('TB-9', 0)).toBe('TB-9 · —')
+  })
+
+  it('bounceMemoryNote carries the reason plus a digest of rejected evidence', () => {
+    const note = bounceMemoryNote('wrong approach', {
+      criteria: [{ criterion: 'a', met: false, note: '' }],
+      artifacts: ['src/a.ts'],
+      summary: 'implemented X, but Y is broken',
+    })
+    expect(note).toContain('bounce: wrong approach')
+    expect(note).toContain('rejected evidence — implemented X, but Y is broken; artifacts: src/a.ts')
+  })
+
+  it('bounceMemoryNote stays a plain reason when there is no evidence', () => {
+    expect(bounceMemoryNote('scope creep', null)).toBe('bounce: scope creep')
+    expect(bounceMemoryNote('scope creep', undefined)).toBe('bounce: scope creep')
+    expect(bounceMemoryNote('scope creep', { criteria: [], artifacts: [], summary: '' }))
+      .toBe('bounce: scope creep')
+  })
+
+  it('bounceMemoryNote trims blank summary and handles artifacts alone', () => {
+    expect(bounceMemoryNote('r', { criteria: [], artifacts: ['x'], summary: '   ' }))
+      .toBe('bounce: r; rejected evidence — artifacts: x')
   })
 })

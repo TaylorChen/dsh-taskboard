@@ -139,6 +139,20 @@ export function apply(ctx: Context): void {
   // v1.5 S1: board-level statistics — ratios, averages, trend, stuck, cost.
   route(`${BASE}/stats`, 'exact', (_req, res) => json(res, 200, ctx.taskboard.stats()))
 
+  // v1.10 A2: related experience — done tasks with evidence, narrowed by
+  // project, so the create form can surface "what worked before".
+  route(`${BASE}/experience`, 'exact', (req, res) => {
+    if (req.method !== 'GET') return json(res, 405, { error: 'use GET for related experience' })
+    const url = new URL(req.url ?? '', 'http://localhost')
+    const projectId = url.searchParams.get('project') ?? undefined
+    const limitRaw = url.searchParams.get('limit')
+    const limit = limitRaw === null ? undefined : Number.parseInt(limitRaw, 10)
+    json(res, 200, ctx.taskboard.relatedExperience({
+      projectId,
+      ...limit !== undefined && Number.isFinite(limit) ? { limit } : {},
+    }))
+  })
+
   // v1.6 C1: server-sent events — every taskboard write pushes a `changed`
   // event so open panels refresh without polling. The connection stays open
   // (the handler never ends the response); the host webserver is a plain node

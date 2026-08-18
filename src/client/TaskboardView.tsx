@@ -23,7 +23,7 @@ import type { CSSProperties } from 'react'
 import type { TaskboardKey } from './locales.ts'
 import { buildTimeline, enteredStatus, STATUS_TIMELINE_COLOR } from './timeline.ts'
 import { injectBallKeyframes, statusBall } from './ball.ts'
-import { evidenceScore, evidenceStamp, evidenceVerdict } from './evidence.ts'
+import { bounceMemoryNote, evidenceScore, evidenceStamp, evidenceVerdict } from './evidence.ts'
 
 // v1.10 A4: the status ball's keyframes are page-global, injected once at
 // module load (idempotent, client-only).
@@ -230,6 +230,10 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [filterLabel, setFilterLabel] = useState('all')
   // v1.10 A5: which artifact was just copied (for the "Copied!" flash).
   const [copiedArtifact, setCopiedArtifact] = useState<string | null>(null)
+  // v1.10 A2: related experience cards shown in the create form.
+  const [relatedExperience, setRelatedExperience] = useState<Array<{
+    key: string, title: string, criteria: string[], artifacts: string[], summary: string
+  }>>([])
 
   /** Fetch the board without touching `busy`; shared by load (busy) and the
    * v1.6 C1 SSE auto-refresh (silent). */
@@ -407,6 +411,31 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [formDraft])
 
+  /** v1.10 A2: while the create form is open, fetch the project's related
+   * experience ("what worked before") for the memory section. Silent —
+   * a slow or failing read just leaves the section empty. */
+  const createFormProjectId = formDraft?.mode === 'create' ? formDraft.projectId : null
+  useEffect(() => {
+    if (createFormProjectId === null) return
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/taskboard/experience?project=${encodeURIComponent(createFormProjectId)}&limit=3`,
+          { signal: controller.signal },
+        )
+        if (!response.ok) return
+        const cards = await response.json() as Array<{
+          key: string, title: string, criteria: string[], artifacts: string[], summary: string
+        }>
+        setRelatedExperience(cards)
+      } catch {
+        // AbortError on close, network errors on refresh — leave it empty.
+      }
+    })()
+    return () => controller.abort()
+  }, [createFormProjectId])
+
   /** Save the spec editor: one acceptance criterion per line, then the card
    * may move to open. */
   const saveSpec = useCallback(async (task: BoardTask): Promise<void> => {
@@ -420,14 +449,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     setSpecDraft(null)
   }, [specDraft, write])
 
-  /** Confirm a bounce: the reason is required and lands in the task notes. */
+  /** Confirm a bounce: the reason is required; it lands in the notes TOGETHER
+   * with a digest of the rejected evidence (v1.10 A3) — so the next dispatch
+   * starts from the memory of what was tried and why it bounced. */
   const confirmBounce = useCallback(async (task: BoardTask): Promise<void> => {
     if (bounceDraft === null || bounceDraft.taskId !== task.id) return
     const reason = bounceDraft.reason.trim()
     if (reason === '') return
     await write(`/api/taskboard/task/${encodeURIComponent(task.id)}`, 'PATCH', {
       status: 'draft',
-      note: `bounce: ${reason}`,
+      note: bounceMemoryNote(reason, task.evidence),
       expectedRevision: task.revision,
     })
     setBounceDraft(null)
@@ -1581,6 +1612,28 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                     <option key={project.id} value={project.id}>{project.name}</option>
                   ))}
                 </select>
+                {/* v1.10 A2: memory visible at creation — what this project
+                    already learned, so a new task starts from experience. */}
+                {formDraft.mode === 'create' && relatedExperience.length > 0 && (
+                  <div data-experience style={{ ...surface, padding: 8, fontSize: 11, lineHeight: 1.4 }}>
+                    <div style={{ opacity: 0.7, marginBottom: 4 }}>{t('experience.title')}</div>
+                    {relatedExperience.map(card => (
+                      <div key={card.key} style={{ marginBottom: 6 }}>
+                        <div style={{ fontWeight: 700 }}>
+                          {card.key} — {card.title}
+                        </div>
+                        {card.summary !== '' && (
+                          <div style={{ opacity: 0.7 }}>{card.summary}</div>
+                        )}
+                        {card.artifacts.length > 0 && (
+                          <div style={{ opacity: 0.6, marginTop: 2 }}>
+                            {t('evidence.artifacts')}: {card.artifacts.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <input
                   type="datetime-local"
                   value={formDraft.dueAt}
