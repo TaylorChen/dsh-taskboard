@@ -1,6 +1,6 @@
 {
   "name": "@navidid/dsh-taskboard",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Cross-session, workspace-scoped task board for DeepSeek Harness: a capability seam (ctx.taskboard service + storageDomain provider + task tools + /task commands + JSON API), not a session checklist",
   "type": "module",
   "license": "MIT",

@@ -380,6 +380,36 @@ next task's context.
   with nothing dispatched — back to 等待认领 with a `recovered: session lost`
   note, so it is re-claimed instead of stranded (covers process restarts).
 
+## v1.10: the eye-opening board — time, memory, evidence, and proof
+
+The panel stops being a queue and starts telling the task's story, remembering
+what worked, and demanding proof:
+
+- **Task Movie (A1).** The activity drawer renders a chronological timeline —
+  event dots on a rail, colored status segments over the task's whole life.
+- **Animated status balls (A4).** Every card carries a status dot: blue
+  pulsing while the agent works, red breathing when the ball is with a human,
+  green still when done.
+- **Certificate of completion (A5).** Evidence renders as a stamped
+  certificate — per-criterion marks, a pass badge, and artifacts that copy to
+  the clipboard with one click.
+- **Memory at creation (A2).** The create form surfaces the project's related
+  experience ("what worked before") via `GET /api/taskboard/experience`.
+- **Bounce carries memory (A3).** Bouncing a task writes the human's reason
+  PLUS a digest of the rejected evidence into the notes, so the next dispatch
+  starts from what was tried.
+- **Live pulse bar (B1).** The SSE stream drives a heartbeat — green while
+  connected, a pulse + "last change x s" on every pushed change.
+- **First-run magic (B3).** An empty board is an invitation: a three-step
+  onboarding card with a one-click start.
+- **Human review panel (B2).** Awaiting tasks open a dedicated evidence-first
+  dialog — certificate + related experience + the two decisions — instead of
+  squeezing confirmation into a 160px column.
+- **Executable verification (C1).** The spec gains a `verification` command
+  that the dispatched agent MUST run and report; the card surfaces it so
+  anyone can re-run the proof. "The agent says it works" becomes "the board's
+  own check passes".
+
 ## Metrics governance: failure modes, agent comparison, flow, alerts (v1.9)
 
 The 统计 panel and `GET /api/taskboard/stats` now act as a governance tool, not
@@ -518,13 +548,16 @@ further action.
 | POST | `/api/taskboard/reorder` | Pin a column's order: `{ "refs": [<id\|key>…] }` — the column's FULL list (v1.4) |
 | GET | `/api/taskboard/stats` | Board statistics — ratios, averages, trend, failure modes, by-agent, cumulative flow, stuck, cost (v1.5/v1.9) |
 | GET | `/api/taskboard/events` | Server-sent events: pushes `changed` on every taskboard write (v1.6) |
+| GET | `/api/taskboard/experience?project=<id>&limit=<n>` | Related experience — done tasks with evidence, newest first (v1.10) |
 | POST | `/api/taskboard/projects` | Create a project `{ "name" }` (v1.7) |
 | PATCH | `/api/taskboard/projects/<id>` | Rename a project (v1.7) |
 | DELETE | `/api/taskboard/projects/<id>` | Remove an EMPTY project (v1.7) |
 
 Create/update also accept `context_budget_tokens` (input-context cap for the
 dispatched subagent; `null` clears it) since v1.2, `project_id` (migrate the
-task to another project) and `next_task` (the chained task spec) since v1.7.
+task to another project) and `next_task` (the chained task spec) since v1.7,
+and `verification` (the executable command that proves the criteria) since
+v1.10.
 
 Registered on the host's existing web server; no new port. **Writes require
 `content-type: application/json`** — see [SECURITY.md](SECURITY.md) for why.
