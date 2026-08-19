@@ -19,7 +19,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // package, must be in the program for the register call to type.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { TaskboardView, type TaskboardViewInjected } from './TaskboardView.tsx'
-import { resolveOpenableTarget } from './session.ts'
+import { resolveOpenableTarget, wouldSwitch } from './session.ts'
 import { en, NS, zh, type TaskboardKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -68,11 +68,15 @@ export function apply(ctx: ClientContext): void {
         // show (`ids` = top-level rows). A claiming session that is a
         // subagent resolves to its parent; an id with no openable target is
         // treated as missing so the card shows the degraded hint instead of
-        // a click that does nothing.
-        open: (id: string) => {
+        // a click that does nothing. Returns false when the target IS the
+        // current session (the click "lands" but nothing visibly changes) so
+        // the view can give feedback instead of appearing dead.
+        open: (id: string): boolean => {
           const snapshot = sessions.list.getSnapshot()
           const target = resolveOpenableTarget(id, snapshot.byId[id as SessionId], new Set(snapshot.ids))
-          if (target !== null) sessions.open(target as SessionId)
+          if (!wouldSwitch(target, snapshot.current)) return false
+          sessions.open(target as SessionId)
+          return true
         },
         exists: (id: string) => {
           const snapshot = sessions.list.getSnapshot()

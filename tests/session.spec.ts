@@ -4,7 +4,7 @@
  * conversation) is verified by the browser E2E in tests/e2e/v110-session.py.
  */
 import { describe, expect, it } from 'vitest'
-import { resolveOpenableTarget, sessionJump } from '../src/client/session.ts'
+import { resolveOpenableTarget, sessionJump, wouldSwitch } from '../src/client/session.ts'
 
 describe('v1.10 session jump (card title → conversation)', () => {
   it('an in-flight claim offers a jump to the claiming session', () => {
@@ -56,5 +56,32 @@ describe('v1.10 session jump — openable-target resolution', () => {
   it('a visible session with a parent still resolves to itself (it is openable)', () => {
     expect(resolveOpenableTarget('session-parent', { origin: 'subagent', parentSessionId: 'session-top' }, VISIBLE))
       .toBe('session-parent')
+  })
+})
+
+describe('v1.10 session jump — openable-target resolution with current', () => {
+  it('target equal to the current session is not a real switch (returns itself but caller detects same)', () => {
+    // resolveOpenableTarget does not know "current"; the caller (inject) does.
+    // Here we pin that a visible id resolves to itself even when it is also
+    // the current selection — the "same session" feedback is a caller concern.
+    expect(resolveOpenableTarget('session-here', { origin: undefined }, new Set(['session-here']))).toBe('session-here')
+  })
+})
+
+describe('v1.10 session jump — wouldSwitch feedback', () => {
+  it('a target different from the current session is a real switch', () => {
+    expect(wouldSwitch('session-other', 'session-current')).toBe(true)
+  })
+
+  it('the current session itself is not a switch (needs feedback)', () => {
+    expect(wouldSwitch('session-current', 'session-current')).toBe(false)
+  })
+
+  it('a null target is never a switch', () => {
+    expect(wouldSwitch(null, 'session-current')).toBe(false)
+  })
+
+  it('an undefined current session is still a switch for any target', () => {
+    expect(wouldSwitch('session-x', undefined)).toBe(true)
   })
 })

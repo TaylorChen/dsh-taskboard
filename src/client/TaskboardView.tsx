@@ -151,7 +151,7 @@ export interface TaskboardViewInjected {
    * guard, so a deleted session shows a hint instead of throwing.
    */
   sessions: {
-    open(id: string): void
+    open(id: string): boolean
     exists(id: string): boolean
   }
 }
@@ -243,6 +243,10 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
   const [lastChangeAt, setLastChangeAt] = useState<number | null>(null)
   const [changeCount, setChangeCount] = useState(0)
   const [pulseTick, setPulseTick] = useState(0)
+  // v1.10 A-session: a transient notice after a jump click that did NOT
+  // switch (the target is already the current session) — feedback instead of
+  // a click that looks dead.
+  const [jumpNotice, setJumpNotice] = useState<string | null>(null)
   // v1.10 B2: the human review panel — a task awaiting confirmation, opened
   // for evidence-first review (certificate + related experience + decide).
   const [reviewTask, setReviewTask] = useState<BoardTask | null>(null)
@@ -402,13 +406,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
     if (fresh !== undefined) void openActivity(fresh)
   }, [activityTask, commentText, board, write, openActivity])
 
-  /** Switch the conversation to a task's claiming session (W4). */
-  const openSession = useCallback((sessionId: string): void => {
+  /** Switch the conversation to a task's claiming session (W4). Returns true
+   * when the GUI actually switched; false when the target is the current
+   * session (the click lands but nothing visibly changes) or has no openable
+   * target — the caller gives feedback instead of a dead click. */
+  const openSession = useCallback((sessionId: string): boolean => {
     if (!sessions.exists(sessionId)) {
       setMissingSessions(previous => new Set(previous).add(sessionId))
-      return
+      return false
     }
-    sessions.open(sessionId)
+    return sessions.open(sessionId)
   }, [sessions])
 
   /** Escape closes the activity drawer. */
@@ -795,6 +802,24 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
         )}
       </div>
 
+      {/* v1.10 A-session: feedback for a jump that landed on the current
+          session — the click worked, there is just nowhere else to go. */}
+      {jumpNotice !== null && (
+        <div
+          data-jump-notice
+          style={{
+            ...surface,
+            padding: '6px 10px',
+            fontSize: 11,
+            marginBottom: 6,
+            color: 'color-mix(in oklab, #f76b15 75%, currentColor)',
+            border: '1px solid color-mix(in oklab, #f76b15 40%, transparent)',
+          }}
+        >
+          {jumpNotice}
+        </div>
+      )}
+
       {/* v1.5 S1: the stats panel — everything derived from the activity
           stream. Ratios + averages on one row, a 7-day throughput mini-chart
           (pure CSS bars), stuck tasks in warning colour, oldest open. */}
@@ -1132,7 +1157,16 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                             <button
                               type="button"
                               data-session-jump={jump}
-                              onClick={() => { openSession(jump) }}
+                              onClick={() => {
+                                const switched = openSession(jump)
+                                if (!switched) {
+                                  // The target is the session already on
+                                  // screen — the click "lands" with no visible
+                                  // change. Say so instead of looking dead.
+                                  setJumpNotice(t('session.same'))
+                                  window.setTimeout(() => setJumpNotice(null), 3000)
+                                }
+                              }}
                               title={t('session.jump')}
                               style={{
                                 flex: 1,

@@ -56,3 +56,16 @@ export function resolveOpenableTarget(
   }
   return null
 }
+
+/**
+ * v1.10 A-session (feedback): whether opening a target actually SWITCHES the
+ * GUI. When the target is the session already selected, `sessions.open` lands
+ * with no visible change — the caller should say so instead of looking dead.
+ * Also returns false for a null target (nothing openable).
+ */
+export function wouldSwitch(
+  target: string | null,
+  currentSessionId: string | undefined,
+): boolean {
+  return target !== null && target !== currentSessionId
+}

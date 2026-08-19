@@ -134,6 +134,7 @@ export const en = {
   'activity.close': 'Close',
   'session.open': 'Open in conversation',
   'session.jump': 'Open the claiming session — click to switch',
+  'session.same': 'Already in this session — use the Chat / Trajectory tabs above',
   'session.unknown': 'Session no longer exists',
 } as const
 
@@ -264,6 +265,7 @@ export const zh: Record<keyof typeof en, string> = {
   'activity.close': '关闭',
   'session.open': '在对话中打开',
   'session.jump': '进入认领会话 — 点击切换',
+  'session.same': '已在该会话中 — 使用上方 Chat / Trajectory 标签',
   'session.unknown': '会话已不存在',
 }
 
