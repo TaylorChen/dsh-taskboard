@@ -26,3 +26,33 @@ export function sessionJump(
   if (missingSessions.has(task.claimedBySessionId)) return null
   return task.claimedBySessionId
 }
+
+/** A session list row's jump-relevant fields (the `byId` slice we read). */
+export interface SessionRowLike {
+  origin?: 'subagent'
+  parentSessionId?: string
+}
+
+/**
+ * v1.10 A-session (hardening): the jump target must be a session the GUI can
+ * actually show. `visibleIds` are the host list's top-level rows — the
+ * sidebar — while `byId` also holds the current addressed subagent route (not
+ * openable from the sidebar). A claiming session:
+ *   - present in `visibleIds` → itself (top-level, openable),
+ *   - absent but its row names a parent in `visibleIds` → the parent
+ *     (a subagent's story lives in its parent conversation),
+ *   - otherwise → null (no openable target; the card should degrade).
+ *
+ * @returns the openable session id, or null when no openable target exists.
+ */
+export function resolveOpenableTarget(
+  claimedSessionId: string,
+  row: SessionRowLike | undefined,
+  visibleIds: ReadonlySet<string>,
+): string | null {
+  if (visibleIds.has(claimedSessionId)) return claimedSessionId
+  if (row?.parentSessionId !== undefined && visibleIds.has(row.parentSessionId)) {
+    return row.parentSessionId
+  }
+  return null
+}
