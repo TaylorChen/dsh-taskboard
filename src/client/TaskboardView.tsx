@@ -24,6 +24,7 @@ import type { TaskboardKey } from './locales.ts'
 import { buildTimeline, enteredStatus, STATUS_TIMELINE_COLOR } from './timeline.ts'
 import { injectBallKeyframes, statusBall } from './ball.ts'
 import { bounceMemoryNote, evidenceScore, evidenceStamp, evidenceVerdict } from './evidence.ts'
+import { sessionJump } from './session.ts'
 
 // v1.10 A4: the status ball's keyframes are page-global, injected once at
 // module load (idempotent, client-only).
@@ -1116,7 +1117,47 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                             ...ball.animation === null ? {} : { animation: ball.animation },
                           }}
                         />
-                        <div style={{ fontSize: 13, lineHeight: 1.35 }}>{task.title}</div>
+                        {/* v1.10 A-session: while a task is in flight, its
+                            TITLE is the jump into the claiming session — the
+                            highest-frequency "where is this happening" move
+                            needs one click, not a hunt for a footer button.
+                            Drag-to-reorder still works: the card is draggable,
+                            the title is a separate focusable control. */}
+                        {(() => {
+                          const jump = sessionJump(task, missingSessions)
+                          if (jump === null) {
+                            return <div style={{ fontSize: 13, lineHeight: 1.35 }}>{task.title}</div>
+                          }
+                          return (
+                            <button
+                              type="button"
+                              data-session-jump={jump}
+                              onClick={() => { openSession(jump) }}
+                              title={t('session.jump')}
+                              style={{
+                                flex: 1,
+                                fontSize: 13,
+                                lineHeight: 1.35,
+                                textAlign: 'left',
+                                padding: 0,
+                                border: 'none',
+                                background: 'none',
+                                color: 'inherit',
+                                fontFamily: 'inherit',
+                                cursor: 'pointer',
+                                textDecoration: 'underline dotted',
+                                textUnderlineOffset: 3,
+                                textDecorationColor: 'color-mix(in oklab, currentColor 45%, transparent)',
+                              }}
+                            >
+                              {task.title}
+                              {' '}
+                              <span style={{ fontSize: 10, opacity: 0.6, whiteSpace: 'nowrap' }}>
+                                {sessionShort(jump)} →
+                              </span>
+                            </button>
+                          )
+                        })()}
                       </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
                         <span>{task.key ?? task.id.slice(0, 8)}</span>
@@ -1412,21 +1453,14 @@ export function TaskboardView({ t, sessions }: TaskboardViewInjected): JSX.Eleme
                           ))}
                         </div>
                       )}
-                      {/* W4: the claiming session, with a jump into that conversation. */}
-                      {task.claimedBySessionId !== null && (
+                      {/* W4: the claiming session. v1.10 A-session: while the
+                          session is live the TITLE is the jump (see above), so
+                          this footer only surfaces the degraded case — a claim
+                          whose session no longer exists. */}
+                      {task.claimedBySessionId !== null && missingSessions.has(task.claimedBySessionId) && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                           <span style={{ fontSize: 10, opacity: 0.6 }}>{sessionShort(task.claimedBySessionId)}</span>
-                          {missingSessions.has(task.claimedBySessionId) ? (
-                            <span style={{ fontSize: 10, color: BLOCKED_TINT }}>{t('session.unknown')}</span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => { openSession(task.claimedBySessionId as string) }}
-                              style={{ ...control, fontSize: 10, padding: '1px 6px', cursor: 'pointer' }}
-                            >
-                              {t('session.open')}
-                            </button>
-                          )}
+                          <span style={{ fontSize: 10, color: BLOCKED_TINT }}>{t('session.unknown')}</span>
                         </div>
                       )}
                       <div style={{ display: 'flex', gap: 6 }}>

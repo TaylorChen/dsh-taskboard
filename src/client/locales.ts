@@ -133,6 +133,7 @@ export const en = {
   'activity.actor.agent': 'Agent',
   'activity.close': 'Close',
   'session.open': 'Open in conversation',
+  'session.jump': 'Open the claiming session — click to switch',
   'session.unknown': 'Session no longer exists',
 } as const
 
@@ -262,6 +263,7 @@ export const zh: Record<keyof typeof en, string> = {
   'activity.actor.agent': 'Agent',
   'activity.close': '关闭',
   'session.open': '在对话中打开',
+  'session.jump': '进入认领会话 — 点击切换',
   'session.unknown': '会话已不存在',
 }
 
