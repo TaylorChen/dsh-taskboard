@@ -41,6 +41,10 @@ an **executable verification** command anyone can re-run:
 
 ![Human review panel](docs/screenshots/v110-b2-review-panel.png) · ![Executable verification](docs/screenshots/v110-c1-verification.png)
 
+While a task is in flight, its title is the jump into the claiming session:
+
+![Title jumps to the session](docs/screenshots/v110-session-jump.png)
+
 ## Why this exists next to `todo_write`
 
 dsh already ships session-scoped work tracking. This plugin does not replace it:
@@ -433,6 +437,10 @@ what worked, and demanding proof:
   that the dispatched agent MUST run and report; the card surfaces it so
   anyone can re-run the proof. "The agent says it works" becomes "the board's
   own check passes".
+- **Title jumps to the session (A-session).** While a task is in flight, its
+  card TITLE is the jump into the claiming session — one click from the board
+  to the conversation where the work is happening (the footer button is gone;
+  it only returns for the "session no longer exists" case).
 
 ## Metrics governance: failure modes, agent comparison, flow, alerts (v1.9)
 
