@@ -440,7 +440,9 @@ what worked, and demanding proof:
 - **Title jumps to the session (A-session).** While a task is in flight, its
   card TITLE is the jump into the claiming session — one click from the board
   to the conversation where the work is happening (the footer button is gone;
-  it only returns for the "session no longer exists" case).
+  it only returns for the "session no longer exists" case). A claiming session
+  that is a subagent resolves to its parent; a jump that lands on the already-
+  current session shows a notice instead of looking dead.
 
 ## Metrics governance: failure modes, agent comparison, flow, alerts (v1.9)
 
